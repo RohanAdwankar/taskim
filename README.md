@@ -25,16 +25,6 @@ Taskim is a terminal-based task manager built with Rust and [ratatui](https://gi
   - Colors and keybindings are configurable via `config.yml`.
   - Toggle keybind help bar and UI wrap mode.
 
-## Recurring Tasks
-
-- **Quick motions:** With a task selected in normal mode, press `r` followed by `d`, `w`, `m`, or `y` to preview daily, weekly, monthly, or yearly recurrences. The calendar temporarily shows every upcoming instance and prompts you to `<Enter>` to confirm or `<Esc>` to cancel.
-- **Advanced patterns:** Command mode supports `:r/<pattern>` where patterns can mix weekday letters (`mtwrfsu`), month-day lists (`1,15`), optional occurrence limits, and the `/a` suffix to create the full series immediately. Examples:
-  - `:r/mtwfr` – recur on weekdays.
-  - `:r/1,15/mtwrf` – recur on the 1st and 15th that fall on weekdays.
-  - `:r/su/30` – recur on weekends for 30 total occurrences.
-  - `:r/mtwrfsu/10/a` – create ten daily tasks upfront.
-- **Lifecycle:** New occurrences appear automatically when you complete a recurring task (unless you chose `/a`). Deleting any task in the chain stops future spawning, and recurring metadata can be cleared with `:r/clear`.
-
 ## Getting Started
 
 1. **Build and Run:**
@@ -56,25 +46,6 @@ Taskim is a terminal-based task manager built with Rust and [ratatui](https://gi
 The goal of this TUI was to replicate the features of the previous [task manager](https://github.com/RohanAdwankar/task-js) I have been using but be fully usable without a mouse using VIM motions.
 
 At this point, the TUI is usable for me, but if there is some feature you would like to see, please let me know! (open an issue or PR)
-
-That being said, here are some goals for the future:
-
-- Full vim motions
-
-  Right now the traversal is just what i ended up needing.
-
-  Thereby it doesnt support '3j' in task traversal for example.
-
-  It also doesnt support vim motions in the task edit view. 
-
-  Since I don't need it, I will add it if someone asks for it.
-
-- Migrate JS App Features
-    
-    There are several features missing currently like:
-    * Search Bar
-    * Activity Tracker
-    * Alternative Task Views
 
 ### Command Mode (`:`) Reference
 
@@ -101,6 +72,16 @@ That being said, here are some goals for the future:
 
 - `:MM/DD/YYYY`, `:YYYY-MM-DD`, `:DD`, `:YYYY`
   Jump to a specific date in the calendar.
+
+## Recurring Tasks Reference
+
+- **Quick motions:** With a task selected in normal mode, press `r` followed by `d`, `w`, `m`, or `y` to preview daily, weekly, monthly, or yearly recurrences. The calendar temporarily shows every upcoming instance and prompts you to `<Enter>` to confirm or `<Esc>` to cancel.
+- **Advanced patterns:** Command mode supports `:r/<pattern>` where patterns can mix weekday letters (`mtwrfsu`), month-day lists (`1,15`), optional occurrence limits, and the `/a` suffix to create the full series immediately. Examples:
+  - `:r/mtwfr` – recur on weekdays.
+  - `:r/1,15/mtwrf` – recur on the 1st and 15th that fall on weekdays.
+  - `:r/su/30` – recur on weekends for 30 total occurrences.
+  - `:r/mtwrfsu/10/a` – create ten daily tasks upfront.
+- **Lifecycle:** New occurrences appear automatically when you complete a recurring task (unless you chose `/a`). Deleting any task in the chain stops future spawning, and recurring metadata can be cleared with `:r/clear`.
 
 ### Config Reference
 - For the color customization options outside of the named colors, I use the Ratatui indexed colors. You can see how the numbers correspond to the colors [here](https://github.com/ratatui/ratatui/blob/main/examples/README.md#color-explorer).
