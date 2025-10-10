@@ -279,6 +279,12 @@ impl Config {
         ));
         spans.push(Span::raw(": Day | "));
 
+        // Search helpers
+        spans.push(Span::styled("/", Style::default().fg(Color::Yellow)));
+        spans.push(Span::raw(": Search | "));
+        spans.push(Span::styled("n/N", Style::default().fg(Color::Yellow)));
+        spans.push(Span::raw(": Next/Prev match | "));
+
         // Quit
         spans.push(Span::styled("q", Style::default().fg(self.quit.color)));
         spans.push(Span::raw(": Quit"));

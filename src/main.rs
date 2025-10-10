@@ -39,6 +39,7 @@ enum AppMode {
     Normal,
     TaskEdit(TaskEditState),
     Command(CommandState),
+    Search(SearchState),
     RecurrencePreview(RecurrencePreviewState),
 }
 
@@ -54,6 +55,55 @@ struct CommandState {
 struct RecurrencePreviewState {
     task_id: String,
     draft: RecurrenceDraft,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct SearchState {
+    input: String,
+    cursor_position: usize,
+}
+
+#[derive(Debug, Clone)]
+struct SearchContext {
+    query: String,
+    matches: Vec<String>,
+    current_index: usize,
+}
+
+enum SearchDirection {
+    Forward,
+    Backward,
+}
+
+impl SearchState {
+    fn new() -> Self {
+        Self {
+            input: String::new(),
+            cursor_position: 0,
+        }
+    }
+
+    fn add_char(&mut self, ch: char) {
+        self.input.insert(self.cursor_position, ch);
+        self.cursor_position += 1;
+    }
+
+    fn remove_char(&mut self) {
+        if self.cursor_position > 0 {
+            self.cursor_position -= 1;
+            self.input.remove(self.cursor_position);
+        }
+    }
+
+    fn move_cursor_left(&mut self) {
+        self.cursor_position = self.cursor_position.saturating_sub(1);
+    }
+
+    fn move_cursor_right(&mut self) {
+        if self.cursor_position < self.input.len() {
+            self.cursor_position += 1;
+        }
+    }
 }
 
 impl CommandState {
@@ -102,6 +152,7 @@ struct App {
     config: crate::config::Config,          // <-- add config field
     show_keybinds: bool,                    // runtime toggle for keybind help
     status_message: Option<String>,         // surface transient status information
+    search_context: Option<SearchContext>,  // track active search results
 }
 
 impl App {
@@ -124,6 +175,7 @@ impl App {
             config,
             show_keybinds,
             status_message: None,
+            search_context: None,
         }
     }
 
@@ -150,6 +202,14 @@ impl App {
                     }
                 } else {
                     self.mode = AppMode::Command(new_state);
+                }
+            }
+            AppMode::Search(state) => {
+                let mut new_state = state.clone();
+                if self.handle_search_mode_key(key, &mut new_state)? {
+                    self.mode = AppMode::Normal;
+                } else {
+                    self.mode = AppMode::Search(new_state);
                 }
             }
             AppMode::TaskEdit(state) => {
@@ -655,6 +715,17 @@ impl App {
             // Enter command mode (vim-style: :)
             self.status_message = None;
             self.mode = AppMode::Command(CommandState::new());
+        } else if key.code == KeyCode::Char('/') && key.modifiers == KeyModifiers::NONE {
+            // Enter search mode (vim-style: /)
+            self.pending_key = None;
+            self.status_message = None;
+            self.mode = AppMode::Search(SearchState::new());
+        } else if key.code == KeyCode::Char('n') && key.modifiers == KeyModifiers::NONE {
+            self.navigate_search(SearchDirection::Forward);
+        } else if matches!(key.code, KeyCode::Char('N'))
+            || (key.code == KeyCode::Char('n') && key.modifiers.contains(KeyModifiers::SHIFT))
+        {
+            self.navigate_search(SearchDirection::Backward);
         } else if key.code == KeyCode::Char('s') && key.modifiers == KeyModifiers::NONE {
             // Toggle scramble mode
             self.scramble_mode = !self.scramble_mode;
@@ -743,6 +814,182 @@ impl App {
             _ => {}
         }
         Ok(false)
+    }
+
+    fn handle_search_mode_key(
+        &mut self,
+        key: crossterm::event::KeyEvent,
+        state: &mut SearchState,
+    ) -> Result<bool> {
+        match key.code {
+            KeyCode::Esc => {
+                return Ok(true);
+            }
+            KeyCode::Enter => {
+                let query = state.input.trim();
+                if query.is_empty() {
+                    self.search_context = None;
+                    self.status_message = None;
+                } else {
+                    self.perform_search(query);
+                }
+                return Ok(true);
+            }
+            KeyCode::Backspace => state.remove_char(),
+            KeyCode::Left => state.move_cursor_left(),
+            KeyCode::Right => state.move_cursor_right(),
+            KeyCode::Char(ch) => state.add_char(ch),
+            _ => {}
+        }
+        Ok(false)
+    }
+
+    fn perform_search(&mut self, query: &str) {
+        let trimmed = query.trim();
+        if trimmed.is_empty() {
+            self.search_context = None;
+            self.status_message = None;
+            return;
+        }
+
+        let query_normalized = trimmed.to_lowercase();
+        let mut tasks = self.build_display_tasks();
+        tasks.sort_by_key(|task| (task.start, task.order));
+
+        let matches: Vec<String> = tasks
+            .iter()
+            .filter(|task| task.title.to_lowercase().contains(&query_normalized))
+            .map(|task| task.id.clone())
+            .collect();
+
+        if matches.is_empty() {
+            self.search_context = None;
+            self.status_message = Some(format!("No matches for \"{}\".", trimmed));
+            return;
+        }
+
+        self.search_context = Some(SearchContext {
+            query: trimmed.to_string(),
+            matches,
+            current_index: 0,
+        });
+
+        if self.focus_current_search_match() {
+            self.update_search_status();
+        }
+    }
+
+    fn focus_current_search_match(&mut self) -> bool {
+        loop {
+            let (query, index, target_id) = match self.search_context.as_ref() {
+                Some(ctx) if !ctx.matches.is_empty() => (
+                    ctx.query.clone(),
+                    ctx.current_index,
+                    ctx.matches[ctx.current_index].clone(),
+                ),
+                _ => return false,
+            };
+
+            if self.focus_task_by_id(&target_id) {
+                return true;
+            }
+
+            if let Some(ctx) = self.search_context.as_mut() {
+                if index < ctx.matches.len() {
+                    ctx.matches.remove(index);
+                }
+
+                if ctx.matches.is_empty() {
+                    self.search_context = None;
+                    self.status_message = Some(format!(
+                        "Search cleared: no remaining matches for \"{}\".",
+                        query
+                    ));
+                    return false;
+                }
+
+                if ctx.current_index >= ctx.matches.len() {
+                    ctx.current_index = 0;
+                }
+            } else {
+                return false;
+            }
+        }
+    }
+
+    fn focus_task_by_id(&mut self, task_id: &str) -> bool {
+        let tasks = self.build_display_tasks();
+        if let Some(task) = tasks.iter().find(|t| t.id == task_id) {
+            let date = task.start.date_naive();
+            if date.month() != self.month_view.current_date.month()
+                || date.year() != self.month_view.current_date.year()
+            {
+                self.month_view.current_date = date.with_day(1).unwrap();
+                self.month_view.weeks =
+                    MonthView::build_weeks_for_date(self.month_view.current_date);
+            }
+
+            self.month_view.selection = month_view::Selection {
+                selection_type: SelectionType::Task(task.id.clone()),
+            };
+            true
+        } else {
+            false
+        }
+    }
+
+    fn update_search_status(&mut self) {
+        if let Some(ctx) = &self.search_context {
+            if ctx.matches.is_empty() {
+                self.status_message = Some(format!("No matches for \"{}\".", ctx.query));
+            } else {
+                self.status_message = Some(format!(
+                    "Search: \"{}\" ({}/{})",
+                    ctx.query,
+                    ctx.current_index + 1,
+                    ctx.matches.len()
+                ));
+            }
+        }
+    }
+
+    fn navigate_search(&mut self, direction: SearchDirection) {
+        loop {
+            let target_index = {
+                let context = match self.search_context.as_ref() {
+                    Some(ctx) if !ctx.matches.is_empty() => ctx,
+                    _ => {
+                        self.status_message = Some("No active search.".to_string());
+                        return;
+                    }
+                };
+
+                let len = context.matches.len();
+                match direction {
+                    SearchDirection::Forward => (context.current_index + 1) % len,
+                    SearchDirection::Backward => {
+                        if context.current_index == 0 {
+                            len - 1
+                        } else {
+                            context.current_index - 1
+                        }
+                    }
+                }
+            };
+
+            if let Some(ctx) = self.search_context.as_mut() {
+                ctx.current_index = target_index;
+            }
+
+            if self.focus_current_search_match() {
+                self.update_search_status();
+                return;
+            }
+
+            if self.search_context.is_none() {
+                return;
+            }
+        }
     }
 
     fn execute_command(&mut self, command: &str) -> Result<(), String> {
@@ -1240,6 +1487,7 @@ impl App {
             }
             AppMode::Normal => {}
             AppMode::RecurrencePreview(_) => {}
+            AppMode::Search(_) => {}
         }
     }
 
@@ -1338,6 +1586,15 @@ impl App {
                         .bg(self.config.ui_colors.default_bg),
                 );
                 frame.render_widget(help_paragraph, area);
+            }
+            AppMode::Search(state) => {
+                let prompt = format!("/{}", state.input);
+                let footer = Paragraph::new(vec![Line::from(vec![Span::raw(prompt)])]).style(
+                    Style::default()
+                        .fg(self.config.ui_colors.default_fg)
+                        .bg(self.config.ui_colors.default_bg),
+                );
+                frame.render_widget(footer, area);
             }
             AppMode::Normal => {
                 let mut lines = Vec::new();

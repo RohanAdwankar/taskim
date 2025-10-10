@@ -17,6 +17,7 @@ Taskim is a terminal-based task manager built with Rust and [ratatui](https://gi
   - Navigate with `h`, `j`, `k`, `l` or arrow keys.
   - Insert tasks above/below (`O`/`o`), delete (`dd`/`x`), yank/copy (`y`), paste (`p`/`P`), and undo/redo (`u/control-r`).
   - Command mode (`:`) for advanced actions (e.g., go to date, toggle wrap, show/hide keybinds).
+  - Search tasks with `/` and move through matches with `n`/`N`. 
 - **Recurring Tasks:**  
   Preview upcoming occurrences before committing, spawn follow-up tasks automatically on completion, or generate entire series upfront.
 - **Scramble Mode:**  
