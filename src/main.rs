@@ -653,6 +653,7 @@ impl App {
             self.month_view.last_day_of_month();
         } else if key.code == KeyCode::Char(':') && key.modifiers == KeyModifiers::NONE {
             // Enter command mode (vim-style: :)
+            self.status_message = None;
             self.mode = AppMode::Command(CommandState::new());
         } else if key.code == KeyCode::Char('s') && key.modifiers == KeyModifiers::NONE {
             // Toggle scramble mode
@@ -921,23 +922,8 @@ impl App {
         task_id: String,
         draft: RecurrenceDraft,
     ) -> Result<(), String> {
-        let occurrences_len = draft.occurrences.len();
-        let description = draft.description.clone();
-
         self.mode = AppMode::RecurrencePreview(RecurrencePreviewState { task_id, draft });
-
-        let message = if occurrences_len == 0 {
-            format!(
-                "Recurrence preview ready: {}. Only the current occurrence exists. Enter=Confirm, Esc=Cancel.",
-                description
-            )
-        } else {
-            format!(
-                "Recurrence preview ready: {} · showing {} future occurrences. Enter=Confirm, Esc=Cancel.",
-                description, occurrences_len
-            )
-        };
-        self.set_status_message(message);
+        self.status_message = None;
         Ok(())
     }
 
@@ -1373,7 +1359,6 @@ impl App {
                 frame.render_widget(footer, area);
             }
             AppMode::RecurrencePreview(state) => {
-                let mut lines = Vec::new();
                 let summary = if state.draft.occurrences.is_empty() {
                     format!(
                         "Recurrence: {} · No additional occurrences generated. Enter=Confirm, Esc=Cancel.",
@@ -1387,16 +1372,21 @@ impl App {
                     )
                 };
 
-                lines.push(Line::from(vec![Span::styled(
-                    summary,
-                    Style::default().fg(self.config.ui_colors.selected_task_fg),
-                )]));
+                let combined = if let Some(message) = &self.status_message {
+                    if message.is_empty() {
+                        summary.clone()
+                    } else {
+                        format!("{} — {}", summary, message)
+                    }
+                } else {
+                    summary.clone()
+                };
 
-                if let Some(message) = &self.status_message {
-                    lines.push(Line::from(vec![Span::raw(message.clone())]));
-                }
-
-                let footer = Paragraph::new(lines).style(
+                let footer = Paragraph::new(vec![Line::from(vec![Span::styled(
+                    combined,
+                    Style::default().fg(self.config.ui_colors.default_fg),
+                )])])
+                .style(
                     Style::default()
                         .fg(self.config.ui_colors.default_fg)
                         .bg(self.config.ui_colors.default_bg),
