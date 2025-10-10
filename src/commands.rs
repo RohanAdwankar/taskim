@@ -8,55 +8,127 @@ pub struct CommandInfo {
 pub fn get_command_registry() -> HashMap<&'static str, CommandInfo> {
     let mut map = HashMap::new();
     // Quit commands
-    map.insert("q", CommandInfo {
-        description: "Quit the application.",
-        exec: |app, _| { app.should_exit = true; Ok(()) },
-    });
-    map.insert("quit", CommandInfo {
-        description: "Quit the application.",
-        exec: |app, _| { app.should_exit = true; Ok(()) },
-    });
-    map.insert("wq", CommandInfo {
-        description: "Quit the application.",
-        exec: |app, _| { app.should_exit = true; Ok(()) },
-    });
-    map.insert("x", CommandInfo {
-        description: "Quit the application.",
-        exec: |app, _| { app.should_exit = true; Ok(()) },
-    });
+    map.insert(
+        "q",
+        CommandInfo {
+            description: "Quit the application.",
+            exec: |app, _| {
+                app.should_exit = true;
+                Ok(())
+            },
+        },
+    );
+    map.insert(
+        "quit",
+        CommandInfo {
+            description: "Quit the application.",
+            exec: |app, _| {
+                app.should_exit = true;
+                Ok(())
+            },
+        },
+    );
+    map.insert(
+        "wq",
+        CommandInfo {
+            description: "Quit the application.",
+            exec: |app, _| {
+                app.should_exit = true;
+                Ok(())
+            },
+        },
+    );
+    map.insert(
+        "x",
+        CommandInfo {
+            description: "Quit the application.",
+            exec: |app, _| {
+                app.should_exit = true;
+                Ok(())
+            },
+        },
+    );
     // Help command is handled specially in main.rs
-    map.insert("seekeys", CommandInfo {
-        description: "Show keybindings bar.",
-        exec: |app, _| { app.show_keybinds = true; Ok(()) },
-    });
-    map.insert("set seekeys", CommandInfo {
-        description: "Show keybindings bar.",
-        exec: |app, _| { app.show_keybinds = true; Ok(()) },
-    });
-    map.insert("nokeys", CommandInfo {
-        description: "Hide keybindings bar.",
-        exec: |app, _| { app.show_keybinds = false; Ok(()) },
-    });
-    map.insert("set nokeys", CommandInfo {
-        description: "Hide keybindings bar.",
-        exec: |app, _| { app.show_keybinds = false; Ok(()) },
-    });
-    map.insert("wrap", CommandInfo {
-        description: "Enable UI text wrapping.",
-        exec: |app, _| { app.month_view.set_wrap(true); Ok(()) },
-    });
-    map.insert("set wrap", CommandInfo {
-        description: "Enable UI text wrapping.",
-        exec: |app, _| { app.month_view.set_wrap(true); Ok(()) },
-    });
-    map.insert("nowrap", CommandInfo {
-        description: "Disable UI text wrapping.",
-        exec: |app, _| { app.month_view.set_wrap(false); Ok(()) },
-    });
-    map.insert("set nowrap", CommandInfo {
-        description: "Disable UI text wrapping.",
-        exec: |app, _| { app.month_view.set_wrap(false); Ok(()) },
-    });
+    map.insert(
+        "seekeys",
+        CommandInfo {
+            description: "Show keybindings bar.",
+            exec: |app, _| {
+                app.show_keybinds = true;
+                Ok(())
+            },
+        },
+    );
+    map.insert(
+        "set seekeys",
+        CommandInfo {
+            description: "Show keybindings bar.",
+            exec: |app, _| {
+                app.show_keybinds = true;
+                Ok(())
+            },
+        },
+    );
+    map.insert(
+        "nokeys",
+        CommandInfo {
+            description: "Hide keybindings bar.",
+            exec: |app, _| {
+                app.show_keybinds = false;
+                Ok(())
+            },
+        },
+    );
+    map.insert(
+        "set nokeys",
+        CommandInfo {
+            description: "Hide keybindings bar.",
+            exec: |app, _| {
+                app.show_keybinds = false;
+                Ok(())
+            },
+        },
+    );
+    map.insert(
+        "wrap",
+        CommandInfo {
+            description: "Enable UI text wrapping.",
+            exec: |app, _| {
+                app.month_view.set_wrap(true);
+                Ok(())
+            },
+        },
+    );
+    map.insert(
+        "set wrap",
+        CommandInfo {
+            description: "Enable UI text wrapping.",
+            exec: |app, _| {
+                app.month_view.set_wrap(true);
+                Ok(())
+            },
+        },
+    );
+    map.insert(
+        "nowrap",
+        CommandInfo {
+            description: "Disable UI text wrapping.",
+            exec: |app, _| {
+                app.month_view.set_wrap(false);
+                Ok(())
+            },
+        },
+    );
+    map.insert(
+        "set nowrap",
+        CommandInfo {
+            description: "Disable UI text wrapping.",
+            exec: |app, _| {
+                app.month_view.set_wrap(false);
+                Ok(())
+            },
+        },
+    );
     // Date navigation commands are handled in main.rs
     map.insert(
         "YYYY",

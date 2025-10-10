@@ -517,10 +517,11 @@ pub fn render_month_view(
         month_view.current_date.year()
     );
 
-    let block = Block::default()
-        .title(title)
-        .borders(Borders::ALL)
-        .style(Style::default().fg(config.ui_colors.selected_task_bg).bg(config.ui_colors.default_bg));
+    let block = Block::default().title(title).borders(Borders::ALL).style(
+        Style::default()
+            .fg(config.ui_colors.selected_task_bg)
+            .bg(config.ui_colors.default_bg),
+    );
 
     let inner_area = block.inner(area);
     frame.render_widget(block, area);
@@ -608,7 +609,15 @@ pub fn render_month_view(
             }
 
             let day_area = day_layout[day_index];
-            render_day_cell(frame, day_area, date, month_view, tasks, scramble_mode, config);
+            render_day_cell(
+                frame,
+                day_area,
+                date,
+                month_view,
+                tasks,
+                scramble_mode,
+                config,
+            );
         }
     }
 }
@@ -631,7 +640,9 @@ fn render_day_cell(
 
     // Day style
     let day_style = if is_selected_day {
-        Style::default().bg(config.ui_colors.selected_task_bg).fg(config.ui_colors.selected_task_fg)
+        Style::default()
+            .bg(config.ui_colors.selected_task_bg)
+            .fg(config.ui_colors.selected_task_fg)
     } else if !is_current_month {
         Style::default().fg(config.ui_colors.selected_completed_task_bg)
     } else {
@@ -682,9 +693,23 @@ fn render_day_cell(
             let task_area = day_layout[1];
 
             if month_view.wrap_enabled {
-                render_tasks_wrapped(frame, task_area, &day_tasks, month_view, scramble_mode, config);
+                render_tasks_wrapped(
+                    frame,
+                    task_area,
+                    &day_tasks,
+                    month_view,
+                    scramble_mode,
+                    config,
+                );
             } else {
-                render_tasks_nowrap(frame, task_area, &day_tasks, month_view, scramble_mode, config);
+                render_tasks_nowrap(
+                    frame,
+                    task_area,
+                    &day_tasks,
+                    month_view,
+                    scramble_mode,
+                    config,
+                );
             }
         }
     }
@@ -707,7 +732,11 @@ fn render_tasks_nowrap(
                 SelectionType::Task(ref task_id) if task_id == &task.id
             );
 
-            let style = if is_selected_task && task.completed {
+            let style = if task.is_preview {
+                Style::default()
+                    .fg(config.ui_colors.selected_completed_task_bg)
+                    .add_modifier(Modifier::ITALIC)
+            } else if is_selected_task && task.completed {
                 Style::default()
                     .bg(config.ui_colors.selected_completed_task_bg)
                     .fg(config.ui_colors.selected_completed_task_fg)
@@ -818,7 +847,11 @@ fn render_tasks_wrapped(
             SelectionType::Task(ref task_id) if task_id == &task.id
         );
 
-        let style = if is_selected_task && task.completed {
+        let style = if task.is_preview {
+            Style::default()
+                .fg(config.ui_colors.selected_completed_task_bg)
+                .add_modifier(Modifier::ITALIC)
+        } else if is_selected_task && task.completed {
             Style::default()
                 .bg(config.ui_colors.selected_completed_task_bg)
                 .fg(config.ui_colors.selected_completed_task_fg)

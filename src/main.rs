@@ -2,6 +2,7 @@ mod commands;
 mod config;
 mod data;
 mod month_view;
+mod recurrence;
 mod task;
 mod task_edit;
 mod undo;
@@ -9,6 +10,11 @@ mod utils;
 
 use crate::data::{load_data, save_data};
 use crate::month_view::{render_month_view, MonthView, SelectionType};
+use crate::recurrence::{
+    build_draft_from_motion, parse_command as parse_recurrence_command, ParsedCommand,
+    RecurrenceDraft, RecurrenceMotion, RecurrenceSpawnMode,
+};
+use crate::task::Task;
 use crate::task::TaskData;
 use crate::task_edit::{render_task_edit_popup, TaskEditState};
 use crate::undo::{Operation, UndoStack};
@@ -25,12 +31,15 @@ use ratatui::{
     widgets::Paragraph,
     DefaultTerminal, Frame,
 };
+use std::collections::HashMap;
+use uuid::Uuid;
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone)]
 enum AppMode {
     Normal,
     TaskEdit(TaskEditState),
     Command(CommandState),
+    RecurrencePreview(RecurrencePreviewState),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -39,6 +48,12 @@ struct CommandState {
     cursor_position: usize,
     show_help: bool,
     last_error: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+struct RecurrencePreviewState {
+    task_id: String,
+    draft: RecurrenceDraft,
 }
 
 impl CommandState {
@@ -86,6 +101,7 @@ struct App {
     scramble_mode: bool,                    // Toggle for scrambling task names with numbers
     config: crate::config::Config,          // <-- add config field
     show_keybinds: bool,                    // runtime toggle for keybind help
+    status_message: Option<String>,         // surface transient status information
 }
 
 impl App {
@@ -107,6 +123,7 @@ impl App {
             scramble_mode: false,
             config,
             show_keybinds,
+            status_message: None,
         }
     }
 
@@ -115,14 +132,22 @@ impl App {
         Ok(())
     }
 
+    fn set_status_message<S: Into<String>>(&mut self, message: S) {
+        self.status_message = Some(message.into());
+    }
+
     fn handle_key_event(&mut self, key: crossterm::event::KeyEvent) -> Result<()> {
         match &self.mode {
             AppMode::Normal => self.handle_normal_mode_key(key)?,
             AppMode::Command(state) => {
                 let mut new_state = state.clone();
                 if self.handle_command_mode_key(key, &mut new_state)? {
-                    // Command completed or cancelled
-                    self.mode = AppMode::Normal;
+                    // Command completed or cancelled. If the mode wasn't changed during command execution,
+                    // fall back to normal mode. This allows commands to transition into other modes (e.g.,
+                    // recurrence preview) without being overwritten here.
+                    if matches!(self.mode, AppMode::Command(_)) {
+                        self.mode = AppMode::Normal;
+                    }
                 } else {
                     self.mode = AppMode::Command(new_state);
                 }
@@ -178,6 +203,14 @@ impl App {
                     self.mode = AppMode::TaskEdit(new_state);
                 }
             }
+            AppMode::RecurrencePreview(state) => {
+                let mut preview_state = state.clone();
+                if self.handle_recurrence_preview_key(key, &mut preview_state)? {
+                    self.mode = AppMode::Normal;
+                } else {
+                    self.mode = AppMode::RecurrencePreview(preview_state);
+                }
+            }
         }
         Ok(())
     }
@@ -211,6 +244,8 @@ impl App {
                         // Store the cut task for pasting
                         self.yanked_task = Some(task.clone());
 
+                        self.handle_task_removed_side_effects(&task);
+
                         // Track deletion for undo functionality
                         self.undo_stack.push(Operation::DeleteTask { task });
 
@@ -232,6 +267,19 @@ impl App {
                         }
 
                         self.save()?;
+                    }
+                }
+                self.pending_key = None;
+                return Ok(());
+            } else if pending == 'r' && key.modifiers == KeyModifiers::NONE {
+                if let KeyCode::Char(ch) = key.code {
+                    if let Some(motion) = RecurrenceMotion::from_char(ch) {
+                        match self.start_recurrence_preview_from_motion(motion) {
+                            Ok(_) => {}
+                            Err(err) => self.set_status_message(err),
+                        }
+                        self.pending_key = None;
+                        return Ok(());
                     }
                 }
                 self.pending_key = None;
@@ -320,15 +368,16 @@ impl App {
         } else if self.config.delete.matches(key.code, key.modifiers) {
             // Delete/cut the selected task (vim-style 'x') - same as 'dd'
             if let Some(task_id) = self.month_view.get_selected_task_id() {
-                if let Some(deleted_task) = self.data.remove_task_and_reorder(&task_id) {
-                    let task_date = deleted_task.start.date_naive();
+                if let Some(task) = self.data.remove_task_and_reorder(&task_id) {
+                    let task_date = task.start.date_naive();
 
                     // Store the cut task for pasting (copy functionality)
-                    self.yanked_task = Some(deleted_task.clone());
+                    self.yanked_task = Some(task.clone());
+
+                    self.handle_task_removed_side_effects(&task);
 
                     // Track deletion for undo functionality
-                    self.undo_stack
-                        .push(Operation::DeleteTask { task: deleted_task });
+                    self.undo_stack.push(Operation::DeleteTask { task });
 
                     // Check if there are any remaining tasks on the same date
                     let remaining_tasks = self.data.get_tasks_for_date(task_date);
@@ -357,6 +406,7 @@ impl App {
                     Operation::DeleteTask { task } => {
                         // Restore deleted task
                         self.data.events.push(task.clone());
+                        self.handle_task_restored_side_effects(&task);
 
                         // Select the restored task
                         self.month_view.selection = month_view::Selection {
@@ -378,6 +428,7 @@ impl App {
                     Operation::CreateTask { task } => {
                         // Remove created task
                         self.data.events.retain(|t| t.id != task.id);
+                        self.handle_task_removed_side_effects(&task);
 
                         // Select the day where the task was
                         let task_date = task.start.date_naive();
@@ -395,6 +446,7 @@ impl App {
                     Operation::DeleteTask { task } => {
                         // Re-delete the task
                         self.data.events.retain(|t| t.id != task.id);
+                        self.handle_task_removed_side_effects(&task);
 
                         // Select the day where the task was
                         let task_date = task.start.date_naive();
@@ -417,6 +469,7 @@ impl App {
                     Operation::CreateTask { task } => {
                         // Re-create task
                         self.data.events.push(task.clone());
+                        self.handle_task_restored_side_effects(&task);
 
                         // Select the restored task
                         self.month_view.selection = month_view::Selection {
@@ -427,11 +480,31 @@ impl App {
                 }
                 self.save()?;
             }
+        } else if key.code == KeyCode::Char('r') && key.modifiers == KeyModifiers::NONE {
+            self.pending_key = Some('r');
+            self.set_status_message(
+                "Awaiting recurrence modifier (d=day, w=week, m=month, y=year).",
+            );
+            return Ok(());
         } else if self.config.toggle_complete.matches(key.code, key.modifiers) {
             // Toggle task completion
             if let Some(task_id) = self.month_view.get_selected_task_id() {
-                if let Some(task) = self.data.events.iter_mut().find(|t| t.id == task_id) {
-                    task.completed = !task.completed;
+                if let Some(index) = self.data.events.iter().position(|t| t.id == task_id) {
+                    let was_completed = self.data.events[index].completed;
+                    self.data.events[index].completed = !was_completed;
+                    let task_snapshot = self.data.events[index].clone();
+
+                    if !was_completed {
+                        let previous_message = self.status_message.clone();
+                        if let Err(err) = self.handle_task_marked_complete(&task_snapshot) {
+                            self.set_status_message(err);
+                        } else if self.status_message.as_ref() == previous_message.as_ref() {
+                            self.set_status_message("Task marked complete.");
+                        }
+                    } else {
+                        self.set_status_message("Task marked incomplete.");
+                    }
+
                     self.save()?;
                 }
             }
@@ -695,6 +768,9 @@ impl App {
         if trimmed.is_empty() {
             return Ok(());
         }
+        if let Some(result) = self.try_execute_recurrence_command(trimmed) {
+            return result;
+        }
         // Try registry
         if let Some(cmd) = registry.get(trimmed) {
             (cmd.exec)(self, trimmed)?;
@@ -767,6 +843,361 @@ impl App {
         None
     }
 
+    fn build_display_tasks(&self) -> Vec<Task> {
+        let mut tasks = self.data.events.clone();
+        if let AppMode::RecurrencePreview(state) = &self.mode {
+            tasks.extend(self.build_preview_tasks(state));
+        }
+        tasks
+    }
+
+    fn build_preview_tasks(&self, state: &RecurrencePreviewState) -> Vec<Task> {
+        let mut previews = Vec::new();
+        let base_task = match self.data.events.iter().find(|t| t.id == state.task_id) {
+            Some(task) => task.clone(),
+            None => return previews,
+        };
+
+        let mut order_map: HashMap<chrono::NaiveDate, u32> = HashMap::new();
+        for task in &self.data.events {
+            let date = task.start.date_naive();
+            let entry = order_map.entry(date).or_insert(task.order);
+            if task.order > *entry {
+                *entry = task.order;
+            }
+        }
+
+        for (idx, occurrence) in state.draft.occurrences.iter().enumerate() {
+            let mut preview = base_task.clone();
+            preview.id = format!("preview:{}:{}", state.draft.series.id, idx);
+            preview.start = occurrence.start;
+            preview.end = occurrence.end;
+            preview.completed = false;
+            preview.is_preview = true;
+            preview.recurrence_series_id = Some(state.draft.series.id.clone());
+            preview.recurrence_occurrence =
+                Some(state.draft.series.generated_occurrences + idx as u32);
+
+            let date = preview.start.date_naive();
+            let entry = order_map
+                .entry(date)
+                .or_insert_with(|| self.data.max_order_for_date(date));
+            *entry += 1;
+            preview.order = *entry;
+
+            previews.push(preview);
+        }
+
+        previews
+    }
+
+    fn start_recurrence_preview_from_motion(
+        &mut self,
+        motion: RecurrenceMotion,
+    ) -> Result<(), String> {
+        let task_id = self
+            .month_view
+            .get_selected_task_id()
+            .ok_or_else(|| "Select a task before setting recurrence.".to_string())?;
+
+        let task = self
+            .data
+            .events
+            .iter()
+            .find(|t| t.id == task_id)
+            .cloned()
+            .ok_or_else(|| "Selected task could not be found.".to_string())?;
+
+        if task.recurrence_series_id.is_some() {
+            return Err("Task already has a recurrence. Use :r/clear first.".to_string());
+        }
+
+        let draft = build_draft_from_motion(&task, motion);
+        self.activate_recurrence_preview(task_id, draft)
+    }
+
+    fn activate_recurrence_preview(
+        &mut self,
+        task_id: String,
+        draft: RecurrenceDraft,
+    ) -> Result<(), String> {
+        let occurrences_len = draft.occurrences.len();
+        let description = draft.description.clone();
+
+        self.mode = AppMode::RecurrencePreview(RecurrencePreviewState { task_id, draft });
+
+        let message = if occurrences_len == 0 {
+            format!(
+                "Recurrence preview ready: {}. Only the current occurrence exists. Enter=Confirm, Esc=Cancel.",
+                description
+            )
+        } else {
+            format!(
+                "Recurrence preview ready: {} · showing {} future occurrences. Enter=Confirm, Esc=Cancel.",
+                description, occurrences_len
+            )
+        };
+        self.set_status_message(message);
+        Ok(())
+    }
+
+    fn handle_recurrence_preview_key(
+        &mut self,
+        key: crossterm::event::KeyEvent,
+        _state: &mut RecurrencePreviewState,
+    ) -> Result<bool> {
+        if key.kind != KeyEventKind::Press {
+            return Ok(false);
+        }
+
+        match key.code {
+            KeyCode::Enter | KeyCode::Char('y') | KeyCode::Char('Y') => {
+                if let AppMode::RecurrencePreview(state) = &self.mode {
+                    let preview_state = state.clone();
+                    match self.commit_recurrence(preview_state) {
+                        Ok(_) => {
+                            self.set_status_message("Recurrence applied.");
+                            return Ok(true);
+                        }
+                        Err(err) => {
+                            self.set_status_message(err);
+                            return Ok(false);
+                        }
+                    }
+                }
+                Ok(false)
+            }
+            KeyCode::Esc | KeyCode::Char('n') | KeyCode::Char('N') => {
+                self.set_status_message("Recurrence cancelled.");
+                Ok(true)
+            }
+            _ => Ok(false),
+        }
+    }
+
+    fn commit_recurrence(&mut self, preview_state: RecurrencePreviewState) -> Result<(), String> {
+        let task_index = self
+            .data
+            .events
+            .iter()
+            .position(|t| t.id == preview_state.task_id)
+            .ok_or_else(|| "Selected task could not be found.".to_string())?;
+
+        if self.data.events[task_index].recurrence_series_id.is_some() {
+            return Err("Task already has a recurrence. Use :r/clear first.".to_string());
+        }
+
+        let old_task = self.data.events[task_index].clone();
+        self.data.events[task_index].recurrence_series_id =
+            Some(preview_state.draft.series.id.clone());
+        self.data.events[task_index].recurrence_occurrence = Some(0);
+        self.data.events[task_index].is_preview = false;
+        let updated_task = self.data.events[task_index].clone();
+
+        self.undo_stack.push(Operation::EditTask {
+            task_id: updated_task.id.clone(),
+            old_task,
+            new_task: updated_task.clone(),
+        });
+
+        let mut series = preview_state.draft.series.clone();
+
+        if series.spawn_mode == RecurrenceSpawnMode::AllAtOnce {
+            for (idx, occurrence) in preview_state.draft.occurrences.iter().enumerate() {
+                let mut new_task = updated_task.clone();
+                new_task.id = Uuid::new_v4().to_string();
+                new_task.start = occurrence.start;
+                new_task.end = occurrence.end;
+                new_task.completed = false;
+                new_task.is_preview = false;
+                new_task.recurrence_series_id = Some(series.id.clone());
+                new_task.recurrence_occurrence = Some((idx as u32) + 1);
+
+                let date = new_task.start.date_naive();
+                let order = self.data.max_order_for_date(date) + 1;
+                self.data.insert_task_at_order(new_task.clone(), order);
+
+                self.undo_stack.push(Operation::CreateTask {
+                    task: new_task.clone(),
+                });
+            }
+
+            series.generated_occurrences = 1 + preview_state.draft.occurrences.len() as u32;
+            series.active = false;
+        } else {
+            series.generated_occurrences = 1;
+            series.active = series.has_remaining();
+        }
+
+        let series_id = series.id.clone();
+        self.data.recurrences.insert(series_id, series);
+
+        self.save().map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    fn handle_task_marked_complete(&mut self, completed_task: &Task) -> Result<(), String> {
+        let Some(series_id) = &completed_task.recurrence_series_id else {
+            return Ok(());
+        };
+
+        let mut next_task: Option<Task> = None;
+        let mut completion_message: Option<String> = None;
+
+        if let Some(series) = self.data.recurrences.get_mut(series_id) {
+            if series.spawn_mode != RecurrenceSpawnMode::OnCompletion || !series.active {
+                return Ok(());
+            }
+
+            if let Some(total) = series.total_occurrences {
+                if series.generated_occurrences >= total {
+                    series.active = false;
+                    return Ok(());
+                }
+            }
+
+            if let Some(next) = series.next_occurrence_after(completed_task.start) {
+                let mut new_task = completed_task.clone();
+                new_task.id = Uuid::new_v4().to_string();
+                new_task.start = next.start;
+                new_task.end = next.end;
+                new_task.completed = false;
+                new_task.is_preview = false;
+                new_task.recurrence_series_id = Some(series_id.clone());
+                new_task.recurrence_occurrence = Some(series.generated_occurrences);
+
+                series.generated_occurrences += 1;
+                if let Some(total) = series.total_occurrences {
+                    if series.generated_occurrences >= total {
+                        series.active = false;
+                    }
+                }
+                next_task = Some(new_task);
+            } else {
+                series.active = false;
+                completion_message = Some("Recurrence completed.".to_string());
+            }
+        } else {
+            return Err("Recurrence metadata missing for completed task.".to_string());
+        }
+
+        if let Some(mut new_task) = next_task {
+            let date = new_task.start.date_naive();
+            let order = self.data.max_order_for_date(date) + 1;
+            new_task.order = order;
+            self.data.insert_task_at_order(new_task.clone(), order);
+            self.undo_stack.push(Operation::CreateTask {
+                task: new_task.clone(),
+            });
+            self.set_status_message(format!(
+                "Spawned next occurrence on {}.",
+                new_task.start.format("%Y-%m-%d")
+            ));
+        } else if let Some(message) = completion_message {
+            self.set_status_message(message);
+        }
+
+        Ok(())
+    }
+
+    fn handle_task_removed_side_effects(&mut self, task: &Task) {
+        if let Some(series_id) = &task.recurrence_series_id {
+            if let Some(series) = self.data.recurrences.get_mut(series_id) {
+                series.active = false;
+            }
+        }
+    }
+
+    fn handle_task_restored_side_effects(&mut self, task: &Task) {
+        if let Some(series_id) = &task.recurrence_series_id {
+            if let Some(series) = self.data.recurrences.get_mut(series_id) {
+                if series.spawn_mode == RecurrenceSpawnMode::OnCompletion && series.has_remaining()
+                {
+                    series.active = true;
+                }
+            }
+        }
+    }
+
+    fn clear_recurrence_for_task(&mut self, task_id: &str) -> Result<(), String> {
+        let index = self
+            .data
+            .events
+            .iter()
+            .position(|t| t.id == task_id)
+            .ok_or_else(|| "Selected task not found.".to_string())?;
+
+        if self.data.events[index].recurrence_series_id.is_none() {
+            return Err("Selected task does not have a recurrence.".to_string());
+        }
+
+        let series_id = self.data.events[index]
+            .recurrence_series_id
+            .clone()
+            .unwrap();
+
+        let mut edits = Vec::new();
+        for task in self.data.events.iter_mut() {
+            if task
+                .recurrence_series_id
+                .as_deref()
+                .map(|id| id == series_id.as_str())
+                .unwrap_or(false)
+            {
+                let old_task = task.clone();
+                task.recurrence_series_id = None;
+                task.recurrence_occurrence = None;
+                task.is_preview = false;
+                edits.push((task.id.clone(), old_task, task.clone()));
+            }
+        }
+
+        for (task_id, old_task, new_task) in edits {
+            self.undo_stack.push(Operation::EditTask {
+                task_id,
+                old_task,
+                new_task,
+            });
+        }
+
+        self.data.recurrences.remove(&series_id);
+        self.save().map_err(|e| e.to_string())?;
+        self.set_status_message("Recurrence cleared.");
+        Ok(())
+    }
+
+    fn try_execute_recurrence_command(&mut self, command: &str) -> Option<Result<(), String>> {
+        if !command.starts_with('r') {
+            return None;
+        }
+
+        let task_id = match self.month_view.get_selected_task_id() {
+            Some(id) => id,
+            None => return Some(Err("Select a task before setting recurrence.".to_string())),
+        };
+
+        let task = match self.data.events.iter().find(|t| t.id == task_id).cloned() {
+            Some(task) => task,
+            None => return Some(Err("Selected task not found.".to_string())),
+        };
+
+        match parse_recurrence_command(command, &task) {
+            Ok(ParsedCommand::Clear) => Some(self.clear_recurrence_for_task(&task_id)),
+            Ok(ParsedCommand::Draft(draft)) => {
+                if task.recurrence_series_id.is_some() {
+                    return Some(Err(
+                        "Task already has a recurrence. Use :r/clear first.".to_string()
+                    ));
+                }
+                match self.activate_recurrence_preview(task_id, draft) {
+                    Ok(_) => Some(Ok(())),
+                    Err(err) => Some(Err(err)),
+                }
+            }
+            Err(err) => Some(Err(err.message)),
+        }
+    }
+
     fn run(mut self, mut terminal: DefaultTerminal) -> Result<()> {
         loop {
             terminal.draw(|frame| self.render(frame))?;
@@ -800,11 +1231,12 @@ impl App {
         .split(area);
 
         // Render main content
+        let display_tasks = self.build_display_tasks();
         render_month_view(
             frame,
             layout[0],
             &self.month_view,
-            &self.data.events,
+            &display_tasks,
             self.scramble_mode,
             &self.config,
         );
@@ -821,6 +1253,7 @@ impl App {
                 // Command mode is handled in the footer
             }
             AppMode::Normal => {}
+            AppMode::RecurrencePreview(_) => {}
         }
     }
 
@@ -828,6 +1261,9 @@ impl App {
         match &self.mode {
             AppMode::Command(state) => {
                 let mut lines = vec![];
+                if let Some(message) = &self.status_message {
+                    lines.push(Line::from(vec![Span::raw(message.clone())]));
+                }
                 let has_error_or_help = state.last_error.is_some() || state.show_help;
                 if let Some(err) = &state.last_error {
                     lines.push(Line::from(vec![Span::styled(
@@ -918,20 +1354,54 @@ impl App {
                 frame.render_widget(help_paragraph, area);
             }
             AppMode::Normal => {
+                let mut lines = Vec::new();
+                if let Some(message) = &self.status_message {
+                    lines.push(Line::from(vec![Span::raw(message.clone())]));
+                }
                 if self.show_keybinds {
                     let spans = self.config.get_normal_mode_help_spans(
                         self.undo_stack.can_undo(),
                         self.undo_stack.can_redo(),
                     );
-                    let help_text = vec![Line::from(spans)];
-                    let footer = Paragraph::new(help_text)
-                        .style(Style::default().fg(self.config.ui_colors.default_fg));
-                    frame.render_widget(footer, area);
-                } else {
-                    let footer = Paragraph::new("")
-                        .style(Style::default().fg(self.config.ui_colors.default_fg));
-                    frame.render_widget(footer, area);
+                    lines.push(Line::from(spans));
                 }
+                if lines.is_empty() {
+                    lines.push(Line::from(Span::raw("")));
+                }
+                let footer = Paragraph::new(lines)
+                    .style(Style::default().fg(self.config.ui_colors.default_fg));
+                frame.render_widget(footer, area);
+            }
+            AppMode::RecurrencePreview(state) => {
+                let mut lines = Vec::new();
+                let summary = if state.draft.occurrences.is_empty() {
+                    format!(
+                        "Recurrence: {} · No additional occurrences generated. Enter=Confirm, Esc=Cancel.",
+                        state.draft.description
+                    )
+                } else {
+                    format!(
+                        "Recurrence: {} · Previewing {} future occurrences. Enter=Confirm, Esc=Cancel.",
+                        state.draft.description,
+                        state.draft.occurrences.len()
+                    )
+                };
+
+                lines.push(Line::from(vec![Span::styled(
+                    summary,
+                    Style::default().fg(self.config.ui_colors.selected_task_fg),
+                )]));
+
+                if let Some(message) = &self.status_message {
+                    lines.push(Line::from(vec![Span::raw(message.clone())]));
+                }
+
+                let footer = Paragraph::new(lines).style(
+                    Style::default()
+                        .fg(self.config.ui_colors.default_fg)
+                        .bg(self.config.ui_colors.default_bg),
+                );
+                frame.render_widget(footer, area);
             }
             AppMode::TaskEdit(_) => {
                 let spans = self.config.get_edit_mode_help_spans();

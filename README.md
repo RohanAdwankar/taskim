@@ -17,11 +17,23 @@ Taskim is a terminal-based task manager built with Rust and [ratatui](https://gi
   - Navigate with `h`, `j`, `k`, `l` or arrow keys.
   - Insert tasks above/below (`O`/`o`), delete (`dd`/`x`), yank/copy (`y`), paste (`p`/`P`), and undo/redo (`u/control-r`).
   - Command mode (`:`) for advanced actions (e.g., go to date, toggle wrap, show/hide keybinds).
+- **Recurring Tasks:**  
+  Preview upcoming occurrences before committing, spawn follow-up tasks automatically on completion, or generate entire series upfront.
 - **Scramble Mode:**  
   Toggle (`s`) to obscure task names for privacy.
 - **Customizable UI:**  
   - Colors and keybindings are configurable via `config.yml`.
   - Toggle keybind help bar and UI wrap mode.
+
+## Recurring Tasks
+
+- **Quick motions:** With a task selected in normal mode, press `r` followed by `d`, `w`, `m`, or `y` to preview daily, weekly, monthly, or yearly recurrences. The calendar temporarily shows every upcoming instance and prompts you to `<Enter>` to confirm or `<Esc>` to cancel.
+- **Advanced patterns:** Command mode supports `:r/<pattern>` where patterns can mix weekday letters (`mtwrfsu`), month-day lists (`1,15`), optional occurrence limits, and the `/a` suffix to create the full series immediately. Examples:
+  - `:r/mtwfr` – recur on weekdays.
+  - `:r/1,15/mtwrf` – recur on the 1st and 15th that fall on weekdays.
+  - `:r/su/30` – recur on weekends for 30 total occurrences.
+  - `:r/mtwrfsu/10/a` – create ten daily tasks upfront.
+- **Lifecycle:** New occurrences appear automatically when you complete a recurring task (unless you chose `/a`). Deleting any task in the chain stops future spawning, and recurring metadata can be cleared with `:r/clear`.
 
 ## Getting Started
 
@@ -83,6 +95,9 @@ That being said, here are some goals for the future:
 
 - `:nowrap`, `:set nowrap`  
   Disable UI text wrapping.
+
+- `:r/<pattern>`  
+  Preview and apply recurrence patterns for the selected task (see “Recurring Tasks” for examples). Use `:r/clear` to remove recurrence metadata.
 
 - `:MM/DD/YYYY`, `:YYYY-MM-DD`, `:DD`, `:YYYY`
   Jump to a specific date in the calendar.
