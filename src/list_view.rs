@@ -247,7 +247,7 @@ fn render_task_detail(
     // Status
     lines.push(Line::from(vec![
         Span::styled("Status: ", Style::default().add_modifier(Modifier::BOLD)),
-        Span::raw(if task.completed { "Completed" } else { "Pending" }),
+        Span::raw(if task.completed { "Completed ✓" } else { "Pending" }),
     ]));
     lines.push(Line::from(""));
 
@@ -259,7 +259,10 @@ fn render_task_detail(
         )));
         lines.push(Line::from(""));
         for comment in &task.comments {
-            lines.push(Line::from(Span::raw(&comment.text)));
+            // Split comment into lines for better display
+            for line in comment.text.lines() {
+                lines.push(Line::from(Span::raw(line)));
+            }
         }
     } else {
         lines.push(Line::from(Span::styled(
@@ -267,6 +270,23 @@ fn render_task_detail(
             Style::default().add_modifier(Modifier::ITALIC),
         )));
     }
+    
+    // Add spacing and help text
+    lines.push(Line::from(""));
+    lines.push(Line::from(""));
+    lines.push(Line::from(vec![
+        Span::styled("─".repeat(40), Style::default().fg(config.ui_colors.default_fg)),
+    ]));
+    lines.push(Line::from(vec![
+        Span::styled("Press ", Style::default()),
+        Span::styled("i", Style::default().add_modifier(Modifier::BOLD)),
+        Span::styled(" to edit this task", Style::default()),
+    ]));
+    lines.push(Line::from(vec![
+        Span::styled("Press ", Style::default()),
+        Span::styled("Esc", Style::default().add_modifier(Modifier::BOLD)),
+        Span::styled(" to hide details", Style::default()),
+    ]));
 
     let paragraph = Paragraph::new(lines)
         .block(
