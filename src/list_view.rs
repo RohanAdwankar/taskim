@@ -151,7 +151,8 @@ fn render_task_list(
             let status_char = if task.completed { "✓" } else { " " };
             
             let title = if scramble_mode {
-                format!("Task #{}", &task.id.chars().filter(|c| c.is_numeric()).collect::<String>().chars().take(4).collect::<String>())
+                let numeric_id: String = task.id.chars().filter(|c| c.is_numeric()).take(4).collect();
+                format!("Task #{}", numeric_id)
             } else {
                 task.title.clone()
             };

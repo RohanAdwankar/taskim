@@ -762,8 +762,6 @@ impl App {
     }
 
     fn handle_list_view_keys(&mut self, key: crossterm::event::KeyEvent) -> Result<()> {
-        let sorted_tasks = self.get_sorted_tasks();
-
         if key.code == KeyCode::Enter && key.modifiers == KeyModifiers::NONE {
             // Toggle detail view
             if self.list_view.get_selected_task_id().is_some() {
@@ -775,8 +773,10 @@ impl App {
                 self.list_view.show_detail = false;
             }
         } else if self.config.move_down.matches(key.code, key.modifiers) {
+            let sorted_tasks = self.get_sorted_tasks();
             self.list_view.move_down(&sorted_tasks);
         } else if self.config.move_up.matches(key.code, key.modifiers) {
+            let sorted_tasks = self.get_sorted_tasks();
             self.list_view.move_up(&sorted_tasks);
         } else if self.config.insert_edit.matches(key.code, key.modifiers) {
             // Edit selected task
@@ -1735,11 +1735,14 @@ impl App {
                     AppView::List => "List View (Tab to switch to Calendar)",
                 };
                 
-                if let Some(message) = &self.status_message {
-                    lines.push(Line::from(vec![Span::raw(format!("{} | {}", view_name, message))]));
+                // Format status message to avoid any special character issues
+                let status_line = if let Some(message) = &self.status_message {
+                    format!("{} | {}", view_name, message.replace('\n', " "))
                 } else {
-                    lines.push(Line::from(vec![Span::raw(view_name)]));
-                }
+                    view_name.to_string()
+                };
+                
+                lines.push(Line::from(vec![Span::raw(status_line)]));
                 
                 if self.show_keybinds {
                     let spans = self.config.get_normal_mode_help_spans(
