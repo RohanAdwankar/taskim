@@ -1,6 +1,7 @@
 mod commands;
 mod config;
 mod data;
+mod list_view;
 mod month_view;
 mod recurrence;
 mod task;
@@ -9,6 +10,7 @@ mod undo;
 mod utils;
 
 use crate::data::{load_data, save_data};
+use crate::list_view::{render_list_view, ListView};
 use crate::month_view::{render_month_view, MonthView, SelectionType};
 use crate::recurrence::{
     build_draft_from_motion, parse_command as parse_recurrence_command, ParsedCommand,
@@ -33,6 +35,12 @@ use ratatui::{
 };
 use std::collections::HashMap;
 use uuid::Uuid;
+
+#[derive(Debug, Clone, PartialEq)]
+enum AppView {
+    Calendar,
+    List,
+}
 
 #[derive(Debug, Clone)]
 enum AppMode {
@@ -140,9 +148,11 @@ impl CommandState {
 }
 
 struct App {
+    view: AppView,
     mode: AppMode,
     data: TaskData,
     month_view: MonthView,
+    list_view: ListView,
     should_exit: bool,
     undo_stack: UndoStack,
     yanked_task: Option<crate::task::Task>, // Store yanked task for paste operation
@@ -160,12 +170,15 @@ impl App {
         let data = load_data();
         let current_date = Local::now().date_naive();
         let month_view = MonthView::new(current_date);
+        let list_view = ListView::new();
         let config = crate::config::Config::from_file_or_default("config.yml");
         let show_keybinds = config.show_keybinds;
         Self {
+            view: AppView::Calendar,
             mode: AppMode::Normal,
             data,
             month_view,
+            list_view,
             should_exit: false,
             undo_stack: UndoStack::new(50), // Allow up to 50 undo operations
             yanked_task: None,
@@ -353,6 +366,21 @@ impl App {
             || self.config.quit_alt.matches(key.code, key.modifiers)
         {
             self.should_exit = true;
+        } else if key.code == KeyCode::Tab && key.modifiers == KeyModifiers::NONE {
+            // Toggle between Calendar and List views
+            self.view = match self.view {
+                AppView::Calendar => AppView::List,
+                AppView::List => AppView::Calendar,
+            };
+            
+            // Update list view selection when switching to it
+            if self.view == AppView::List {
+                let sorted_tasks = self.get_sorted_tasks();
+                self.list_view.update_selection(&sorted_tasks);
+            }
+        } else if self.view == AppView::List {
+            // Handle list view specific keys
+            self.handle_list_view_keys(key)?;
         } else if self.config.move_left.matches(key.code, key.modifiers) {
             self.month_view.move_left(&self.data.events);
         } else if self.config.move_down.matches(key.code, key.modifiers) {
@@ -733,6 +761,79 @@ impl App {
         Ok(())
     }
 
+    fn handle_list_view_keys(&mut self, key: crossterm::event::KeyEvent) -> Result<()> {
+        let sorted_tasks = self.get_sorted_tasks();
+
+        if key.code == KeyCode::Enter && key.modifiers == KeyModifiers::NONE {
+            // Toggle detail view
+            if self.list_view.get_selected_task_id().is_some() {
+                self.list_view.toggle_detail_view();
+            }
+        } else if key.code == KeyCode::Esc && key.modifiers == KeyModifiers::NONE {
+            // Hide detail view
+            if self.list_view.show_detail {
+                self.list_view.show_detail = false;
+            }
+        } else if self.config.move_down.matches(key.code, key.modifiers) {
+            self.list_view.move_down(&sorted_tasks);
+        } else if self.config.move_up.matches(key.code, key.modifiers) {
+            self.list_view.move_up(&sorted_tasks);
+        } else if self.config.insert_edit.matches(key.code, key.modifiers) {
+            // Edit selected task
+            if let Some(task_id) = self.list_view.get_selected_task_id() {
+                if let Some(task) = self.data.events.iter().find(|t| t.id == task_id) {
+                    let edit_state = TaskEditState::edit_task(task);
+                    self.mode = AppMode::TaskEdit(edit_state);
+                }
+            }
+        } else if self.config.toggle_complete.matches(key.code, key.modifiers) {
+            // Toggle task completion
+            if let Some(task_id) = self.list_view.get_selected_task_id() {
+                if let Some(index) = self.data.events.iter().position(|t| t.id == task_id) {
+                    let was_completed = self.data.events[index].completed;
+                    self.data.events[index].completed = !was_completed;
+                    let task_snapshot = self.data.events[index].clone();
+
+                    if !was_completed {
+                        let previous_message = self.status_message.clone();
+                        if let Err(err) = self.handle_task_marked_complete(&task_snapshot) {
+                            self.set_status_message(err);
+                        } else if self.status_message.as_ref() == previous_message.as_ref() {
+                            self.set_status_message("Task marked complete.");
+                        }
+                    } else {
+                        self.set_status_message("Task marked incomplete.");
+                    }
+
+                    self.save()?;
+                }
+            }
+        } else if self.config.delete.matches(key.code, key.modifiers) {
+            // Delete selected task
+            if let Some(task_id) = self.list_view.get_selected_task_id() {
+                if let Some(task) = self.data.remove_task_and_reorder(&task_id) {
+                    self.yanked_task = Some(task.clone());
+                    self.handle_task_removed_side_effects(&task);
+                    self.undo_stack.push(Operation::DeleteTask { task });
+
+                    // Update list view selection
+                    let sorted_tasks = self.get_sorted_tasks();
+                    self.list_view.update_selection(&sorted_tasks);
+
+                    self.save()?;
+                }
+            }
+        } else if key.code == KeyCode::Char(':') && key.modifiers == KeyModifiers::NONE {
+            // Enter command mode
+            self.status_message = None;
+            self.mode = AppMode::Command(CommandState::new());
+        } else if key.code == KeyCode::Char('s') && key.modifiers == KeyModifiers::NONE {
+            // Toggle scramble mode
+            self.scramble_mode = !self.scramble_mode;
+        }
+        Ok(())
+    }
+
     fn handle_task_edit_key(
         &mut self,
         key: crossterm::event::KeyEvent,
@@ -1096,6 +1197,20 @@ impl App {
         if let AppMode::RecurrencePreview(state) = &self.mode {
             tasks.extend(self.build_preview_tasks(state));
         }
+        tasks
+    }
+
+    fn get_sorted_tasks(&self) -> Vec<Task> {
+        let mut tasks = self.build_display_tasks();
+        // Sort by date, then by order within each day
+        tasks.sort_by(|a, b| {
+            let date_cmp = a.start.cmp(&b.start);
+            if date_cmp == std::cmp::Ordering::Equal {
+                a.order.cmp(&b.order)
+            } else {
+                date_cmp
+            }
+        });
         tasks
     }
 
@@ -1463,16 +1578,31 @@ impl App {
         ])
         .split(area);
 
-        // Render main content
-        let display_tasks = self.build_display_tasks();
-        render_month_view(
-            frame,
-            layout[0],
-            &self.month_view,
-            &display_tasks,
-            self.scramble_mode,
-            &self.config,
-        );
+        // Render main content based on current view
+        match self.view {
+            AppView::Calendar => {
+                let display_tasks = self.build_display_tasks();
+                render_month_view(
+                    frame,
+                    layout[0],
+                    &self.month_view,
+                    &display_tasks,
+                    self.scramble_mode,
+                    &self.config,
+                );
+            }
+            AppView::List => {
+                let sorted_tasks = self.get_sorted_tasks();
+                render_list_view(
+                    frame,
+                    layout[0],
+                    &self.list_view,
+                    &sorted_tasks,
+                    self.scramble_mode,
+                    &self.config,
+                );
+            }
+        }
 
         // Render footer
         self.render_footer(frame, layout[1]);
@@ -1598,18 +1728,25 @@ impl App {
             }
             AppMode::Normal => {
                 let mut lines = Vec::new();
+                
+                // Add view indicator
+                let view_name = match self.view {
+                    AppView::Calendar => "Calendar View (Tab to switch to List)",
+                    AppView::List => "List View (Tab to switch to Calendar)",
+                };
+                
                 if let Some(message) = &self.status_message {
-                    lines.push(Line::from(vec![Span::raw(message.clone())]));
+                    lines.push(Line::from(vec![Span::raw(format!("{} | {}", view_name, message))]));
+                } else {
+                    lines.push(Line::from(vec![Span::raw(view_name)]));
                 }
+                
                 if self.show_keybinds {
                     let spans = self.config.get_normal_mode_help_spans(
                         self.undo_stack.can_undo(),
                         self.undo_stack.can_redo(),
                     );
                     lines.push(Line::from(spans));
-                }
-                if lines.is_empty() {
-                    lines.push(Line::from(Span::raw("")));
                 }
                 let footer = Paragraph::new(lines)
                     .style(Style::default().fg(self.config.ui_colors.default_fg));
