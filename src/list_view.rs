@@ -13,10 +13,26 @@ pub enum ListSelection {
     NoTasks,         // when there are no tasks
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub enum FocusPanel {
+    List,
+    Detail,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum DetailEditField {
+    None,
+    Title,
+    Description,
+}
+
 #[derive(Debug, Clone)]
 pub struct ListView {
     pub selection: ListSelection,
-    pub show_detail: bool,  // whether to show task details on the right
+    pub show_detail: bool,       // whether to show task details on the right
+    pub focus: FocusPanel,        // which panel has focus (list or detail)
+    pub editing_field: DetailEditField, // which field is being edited in detail panel
+    pub edit_buffer: String,      // buffer for editing
 }
 
 impl ListView {
@@ -24,6 +40,9 @@ impl ListView {
         Self {
             selection: ListSelection::NoTasks,
             show_detail: false,
+            focus: FocusPanel::List,
+            editing_field: DetailEditField::None,
+            edit_buffer: String::new(),
         }
     }
 
@@ -33,6 +52,38 @@ impl ListView {
             ListSelection::Task(id) => Some(id.clone()),
             ListSelection::NoTasks => None,
         }
+    }
+
+    /// Start editing a field in the detail panel
+    pub fn start_editing_title(&mut self, current_title: &str) {
+        self.editing_field = DetailEditField::Title;
+        self.edit_buffer = current_title.to_string();
+    }
+
+    pub fn start_editing_description(&mut self, current_desc: &str) {
+        self.editing_field = DetailEditField::Description;
+        self.edit_buffer = current_desc.to_string();
+    }
+
+    /// Stop editing and clear buffer
+    pub fn stop_editing(&mut self) {
+        self.editing_field = DetailEditField::None;
+        self.edit_buffer.clear();
+    }
+
+    /// Check if currently editing
+    pub fn is_editing(&self) -> bool {
+        self.editing_field != DetailEditField::None
+    }
+
+    /// Add character to edit buffer
+    pub fn add_char(&mut self, ch: char) {
+        self.edit_buffer.push(ch);
+    }
+
+    /// Remove character from edit buffer
+    pub fn remove_char(&mut self) {
+        self.edit_buffer.pop();
     }
 
     /// Move selection down to the next task
@@ -52,6 +103,29 @@ impl ListView {
             ListSelection::NoTasks => {
                 if !tasks.is_empty() {
                     self.selection = ListSelection::Task(tasks[0].id.clone());
+                }
+            }
+        }
+    }
+
+    /// Move selection down by n tasks
+    pub fn move_down_by(&mut self, tasks: &[Task], n: usize) {
+        if tasks.is_empty() {
+            self.selection = ListSelection::NoTasks;
+            return;
+        }
+
+        match &self.selection {
+            ListSelection::Task(current_id) => {
+                if let Some(current_idx) = tasks.iter().position(|t| &t.id == current_id) {
+                    let next_idx = (current_idx + n).min(tasks.len() - 1);
+                    self.selection = ListSelection::Task(tasks[next_idx].id.clone());
+                }
+            }
+            ListSelection::NoTasks => {
+                if !tasks.is_empty() {
+                    let idx = n.min(tasks.len() - 1);
+                    self.selection = ListSelection::Task(tasks[idx].id.clone());
                 }
             }
         }
@@ -80,6 +154,42 @@ impl ListView {
                     self.selection = ListSelection::Task(tasks[0].id.clone());
                 }
             }
+        }
+    }
+
+    /// Move selection up by n tasks
+    pub fn move_up_by(&mut self, tasks: &[Task], n: usize) {
+        if tasks.is_empty() {
+            self.selection = ListSelection::NoTasks;
+            return;
+        }
+
+        match &self.selection {
+            ListSelection::Task(current_id) => {
+                if let Some(current_idx) = tasks.iter().position(|t| &t.id == current_id) {
+                    let prev_idx = current_idx.saturating_sub(n);
+                    self.selection = ListSelection::Task(tasks[prev_idx].id.clone());
+                }
+            }
+            ListSelection::NoTasks => {
+                if !tasks.is_empty() {
+                    self.selection = ListSelection::Task(tasks[0].id.clone());
+                }
+            }
+        }
+    }
+
+    /// Go to first task (gg in vim)
+    pub fn go_to_first(&mut self, tasks: &[Task]) {
+        if !tasks.is_empty() {
+            self.selection = ListSelection::Task(tasks[0].id.clone());
+        }
+    }
+
+    /// Go to last task (G in vim)
+    pub fn go_to_last(&mut self, tasks: &[Task]) {
+        if !tasks.is_empty() {
+            self.selection = ListSelection::Task(tasks[tasks.len() - 1].id.clone());
         }
     }
 
@@ -141,6 +251,8 @@ fn render_task_list(
     scramble_mode: bool,
     config: &crate::config::Config,
 ) {
+    use crate::list_view::FocusPanel;
+
     let selected_id = list_view.get_selected_task_id();
 
     let items: Vec<ListItem> = tasks
@@ -184,9 +296,15 @@ fn render_task_list(
         .collect();
 
     let title = if list_view.show_detail {
-        "Tasks (Press Esc to hide details)"
+        "Tasks (h/l to switch focus)"
     } else {
-        "All Tasks (Press Enter to view details)"
+        "All Tasks (Enter to view details)"
+    };
+
+    let border_style = if list_view.focus == FocusPanel::List {
+        Style::default().fg(config.ui_colors.selected_task_bg)
+    } else {
+        Style::default().fg(config.ui_colors.default_fg)
     };
 
     let list = List::new(items)
@@ -194,7 +312,7 @@ fn render_task_list(
             Block::default()
                 .borders(Borders::ALL)
                 .title(title)
-                .border_style(Style::default().fg(config.ui_colors.default_fg)),
+                .border_style(border_style),
         )
         .style(Style::default().fg(config.ui_colors.default_fg));
 
@@ -208,6 +326,8 @@ fn render_task_detail(
     tasks: &[Task],
     config: &crate::config::Config,
 ) {
+    use crate::list_view::{DetailEditField, FocusPanel};
+
     let selected_id = match &list_view.selection {
         ListSelection::Task(id) => id,
         ListSelection::NoTasks => {
@@ -231,10 +351,20 @@ fn render_task_detail(
     // Build the detail content
     let mut lines = vec![];
     
-    // Title
+    // Title (editable)
+    let title_style = if list_view.editing_field == DetailEditField::Title {
+        Style::default().add_modifier(Modifier::BOLD | Modifier::UNDERLINED).fg(config.ui_colors.selected_task_bg)
+    } else {
+        Style::default()
+    };
+    
     lines.push(Line::from(vec![
         Span::styled("Title: ", Style::default().add_modifier(Modifier::BOLD)),
-        Span::raw(&task.title),
+        if list_view.editing_field == DetailEditField::Title {
+            Span::styled(&list_view.edit_buffer, title_style)
+        } else {
+            Span::raw(&task.title)
+        },
     ]));
     lines.push(Line::from(""));
 
@@ -248,12 +378,27 @@ fn render_task_detail(
     // Status
     lines.push(Line::from(vec![
         Span::styled("Status: ", Style::default().add_modifier(Modifier::BOLD)),
-        Span::raw(if task.completed { "Completed ✓" } else { "Pending" }),
+        Span::raw(if task.completed { "Completed" } else { "Pending" }),
     ]));
     lines.push(Line::from(""));
 
-    // Comments/Description
-    if !task.comments.is_empty() {
+    // Comments/Description (editable)
+    let desc_style = if list_view.editing_field == DetailEditField::Description {
+        Style::default().add_modifier(Modifier::BOLD | Modifier::UNDERLINED).fg(config.ui_colors.selected_task_bg)
+    } else {
+        Style::default()
+    };
+
+    if list_view.editing_field == DetailEditField::Description {
+        lines.push(Line::from(Span::styled(
+            "Description:",
+            Style::default().add_modifier(Modifier::BOLD),
+        )));
+        lines.push(Line::from(""));
+        for line in list_view.edit_buffer.lines() {
+            lines.push(Line::from(Span::styled(line, desc_style)));
+        }
+    } else if !task.comments.is_empty() {
         lines.push(Line::from(Span::styled(
             "Description:",
             Style::default().add_modifier(Modifier::BOLD),
@@ -278,23 +423,47 @@ fn render_task_detail(
     lines.push(Line::from(vec![
         Span::styled("─".repeat(40), Style::default().fg(config.ui_colors.default_fg)),
     ]));
-    lines.push(Line::from(vec![
-        Span::styled("Press ", Style::default()),
-        Span::styled("i", Style::default().add_modifier(Modifier::BOLD)),
-        Span::styled(" to edit this task", Style::default()),
-    ]));
-    lines.push(Line::from(vec![
-        Span::styled("Press ", Style::default()),
-        Span::styled("Esc", Style::default().add_modifier(Modifier::BOLD)),
-        Span::styled(" to hide details", Style::default()),
-    ]));
+    
+    if list_view.is_editing() {
+        lines.push(Line::from(vec![
+            Span::styled("Editing: ", Style::default().add_modifier(Modifier::BOLD)),
+            Span::styled("Enter", Style::default().add_modifier(Modifier::BOLD)),
+            Span::raw(" to save, "),
+            Span::styled("Tab", Style::default().add_modifier(Modifier::BOLD)),
+            Span::raw(" to switch field, "),
+            Span::styled("Esc", Style::default().add_modifier(Modifier::BOLD)),
+            Span::raw(" to cancel"),
+        ]));
+    } else if list_view.focus == FocusPanel::Detail {
+        lines.push(Line::from(vec![
+            Span::styled("Press ", Style::default()),
+            Span::styled("i", Style::default().add_modifier(Modifier::BOLD)),
+            Span::styled(" to edit | ", Style::default()),
+            Span::styled("h", Style::default().add_modifier(Modifier::BOLD)),
+            Span::styled(" to return to list", Style::default()),
+        ]));
+    } else {
+        lines.push(Line::from(vec![
+            Span::styled("Press ", Style::default()),
+            Span::styled("l", Style::default().add_modifier(Modifier::BOLD)),
+            Span::styled(" to focus detail | ", Style::default()),
+            Span::styled("Esc", Style::default().add_modifier(Modifier::BOLD)),
+            Span::styled(" to hide details", Style::default()),
+        ]));
+    }
+
+    let border_style = if list_view.focus == FocusPanel::Detail {
+        Style::default().fg(config.ui_colors.selected_task_bg)
+    } else {
+        Style::default().fg(config.ui_colors.default_fg)
+    };
 
     let paragraph = Paragraph::new(lines)
         .block(
             Block::default()
                 .borders(Borders::ALL)
                 .title("Task Details")
-                .border_style(Style::default().fg(config.ui_colors.default_fg)),
+                .border_style(border_style),
         )
         .wrap(Wrap { trim: true })
         .style(Style::default().fg(config.ui_colors.default_fg));

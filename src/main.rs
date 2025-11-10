@@ -157,6 +157,7 @@ struct App {
     undo_stack: UndoStack,
     yanked_task: Option<crate::task::Task>, // Store yanked task for paste operation
     pending_key: Option<char>,              // For handling multi-key sequences like 'gg'
+    pending_count: Option<usize>,           // For handling count prefix like '7j'
     pending_insert_order: Option<u32>,      // For tracking task insertion order
     scramble_mode: bool,                    // Toggle for scrambling task names with numbers
     config: crate::config::Config,          // <-- add config field
@@ -183,6 +184,7 @@ impl App {
             undo_stack: UndoStack::new(50), // Allow up to 50 undo operations
             yanked_task: None,
             pending_key: None,
+            pending_count: None,
             pending_insert_order: None,
             scramble_mode: false,
             config,
@@ -762,30 +764,111 @@ impl App {
     }
 
     fn handle_list_view_keys(&mut self, key: crossterm::event::KeyEvent) -> Result<()> {
+        use crate::list_view::FocusPanel;
+
+        // If editing in detail panel, handle edit keys
+        if self.list_view.is_editing() {
+            return self.handle_list_edit_keys(key);
+        }
+
+        // Handle number prefix for counts (like 7j, 9k)
+        if let KeyCode::Char(ch) = key.code {
+            if ch.is_ascii_digit() && key.modifiers == KeyModifiers::NONE {
+                let digit = ch.to_digit(10).unwrap() as usize;
+                self.pending_count = Some(self.pending_count.unwrap_or(0) * 10 + digit);
+                return Ok(());
+            }
+        }
+
+        let count = self.pending_count.unwrap_or(1);
+        
+        // Handle multi-key sequences
+        if let Some(pending) = self.pending_key {
+            if pending == 'g' && key.code == KeyCode::Char('g') && key.modifiers == KeyModifiers::NONE {
+                // gg - go to first task
+                let sorted_tasks = self.get_sorted_tasks();
+                self.list_view.go_to_first(&sorted_tasks);
+                self.pending_key = None;
+                self.pending_count = None;
+                return Ok(());
+            }
+            self.pending_key = None;
+        }
+
         if key.code == KeyCode::Enter && key.modifiers == KeyModifiers::NONE {
             // Toggle detail view
             if self.list_view.get_selected_task_id().is_some() {
                 self.list_view.toggle_detail_view();
+                if self.list_view.show_detail {
+                    self.list_view.focus = FocusPanel::Detail;
+                }
             }
+            self.pending_count = None;
         } else if key.code == KeyCode::Esc && key.modifiers == KeyModifiers::NONE {
-            // Hide detail view
+            // Hide detail view or stop editing
             if self.list_view.show_detail {
                 self.list_view.show_detail = false;
+                self.list_view.focus = FocusPanel::List;
             }
+            self.pending_count = None;
+        } else if key.code == KeyCode::Char('h') && key.modifiers == KeyModifiers::NONE {
+            // Move focus to list panel
+            if self.list_view.show_detail {
+                self.list_view.focus = FocusPanel::List;
+            }
+            self.pending_count = None;
+        } else if key.code == KeyCode::Char('l') && key.modifiers == KeyModifiers::NONE {
+            // Move focus to detail panel
+            if self.list_view.show_detail {
+                self.list_view.focus = FocusPanel::Detail;
+            }
+            self.pending_count = None;
+        } else if key.code == KeyCode::Char('g') && key.modifiers == KeyModifiers::NONE {
+            // First 'g' for 'gg' sequence
+            self.pending_key = Some('g');
+            return Ok(());
+        } else if key.code == KeyCode::Char('G') && key.modifiers == KeyModifiers::SHIFT {
+            // G - go to last task
+            let sorted_tasks = self.get_sorted_tasks();
+            self.list_view.go_to_last(&sorted_tasks);
+            self.pending_count = None;
         } else if self.config.move_down.matches(key.code, key.modifiers) {
-            let sorted_tasks = self.get_sorted_tasks();
-            self.list_view.move_down(&sorted_tasks);
+            // Only move in list if focused on list panel
+            if self.list_view.focus == FocusPanel::List {
+                let sorted_tasks = self.get_sorted_tasks();
+                if count > 1 {
+                    self.list_view.move_down_by(&sorted_tasks, count);
+                } else {
+                    self.list_view.move_down(&sorted_tasks);
+                }
+            }
+            self.pending_count = None;
         } else if self.config.move_up.matches(key.code, key.modifiers) {
-            let sorted_tasks = self.get_sorted_tasks();
-            self.list_view.move_up(&sorted_tasks);
+            // Only move in list if focused on list panel
+            if self.list_view.focus == FocusPanel::List {
+                let sorted_tasks = self.get_sorted_tasks();
+                if count > 1 {
+                    self.list_view.move_up_by(&sorted_tasks, count);
+                } else {
+                    self.list_view.move_up(&sorted_tasks);
+                }
+            }
+            self.pending_count = None;
         } else if self.config.insert_edit.matches(key.code, key.modifiers) {
             // Edit selected task
             if let Some(task_id) = self.list_view.get_selected_task_id() {
                 if let Some(task) = self.data.events.iter().find(|t| t.id == task_id) {
-                    let edit_state = TaskEditState::edit_task(task);
-                    self.mode = AppMode::TaskEdit(edit_state);
+                    // In list view with detail shown, edit in-place
+                    if self.list_view.show_detail && self.list_view.focus == FocusPanel::Detail {
+                        self.list_view.start_editing_title(&task.title);
+                    } else {
+                        // Otherwise use the popup editor
+                        let edit_state = TaskEditState::edit_task(task);
+                        self.mode = AppMode::TaskEdit(edit_state);
+                    }
                 }
             }
+            self.pending_count = None;
         } else if self.config.toggle_complete.matches(key.code, key.modifiers) {
             // Toggle task completion
             if let Some(task_id) = self.list_view.get_selected_task_id() {
@@ -808,6 +891,7 @@ impl App {
                     self.save()?;
                 }
             }
+            self.pending_count = None;
         } else if self.config.delete.matches(key.code, key.modifiers) {
             // Delete selected task
             if let Some(task_id) = self.list_view.get_selected_task_id() {
@@ -823,13 +907,84 @@ impl App {
                     self.save()?;
                 }
             }
+            self.pending_count = None;
         } else if key.code == KeyCode::Char(':') && key.modifiers == KeyModifiers::NONE {
             // Enter command mode
             self.status_message = None;
             self.mode = AppMode::Command(CommandState::new());
+            self.pending_count = None;
+        } else if key.code == KeyCode::Char('/') && key.modifiers == KeyModifiers::NONE {
+            // Enter search mode
+            self.status_message = None;
+            self.mode = AppMode::Search(SearchState::new());
+            self.pending_count = None;
         } else if key.code == KeyCode::Char('s') && key.modifiers == KeyModifiers::NONE {
             // Toggle scramble mode
             self.scramble_mode = !self.scramble_mode;
+            self.pending_count = None;
+        } else {
+            // Clear pending count if unrecognized key
+            self.pending_count = None;
+        }
+        Ok(())
+    }
+
+    fn handle_list_edit_keys(&mut self, key: crossterm::event::KeyEvent) -> Result<()> {
+        use crate::list_view::DetailEditField;
+        
+        match key.code {
+            KeyCode::Esc => {
+                // Cancel editing
+                self.list_view.stop_editing();
+            }
+            KeyCode::Enter => {
+                // Save changes
+                if let Some(task_id) = self.list_view.get_selected_task_id() {
+                    if let Some(task) = self.data.events.iter_mut().find(|t| t.id == task_id) {
+                        match self.list_view.editing_field {
+                            DetailEditField::Title => {
+                                if !self.list_view.edit_buffer.trim().is_empty() {
+                                    task.title = self.list_view.edit_buffer.clone();
+                                    self.save()?;
+                                }
+                            }
+                            DetailEditField::Description => {
+                                task.comments.clear();
+                                if !self.list_view.edit_buffer.trim().is_empty() {
+                                    task.add_comment(self.list_view.edit_buffer.clone());
+                                }
+                                self.save()?;
+                            }
+                            DetailEditField::None => {}
+                        }
+                    }
+                }
+                self.list_view.stop_editing();
+            }
+            KeyCode::Tab => {
+                // Switch between title and description
+                if let Some(task_id) = self.list_view.get_selected_task_id() {
+                    if let Some(task) = self.data.events.iter().find(|t| t.id == task_id) {
+                        match self.list_view.editing_field {
+                            DetailEditField::Title => {
+                                let desc = task.comments.first().map(|c| c.text.as_str()).unwrap_or("");
+                                self.list_view.start_editing_description(desc);
+                            }
+                            DetailEditField::Description => {
+                                self.list_view.start_editing_title(&task.title);
+                            }
+                            DetailEditField::None => {}
+                        }
+                    }
+                }
+            }
+            KeyCode::Backspace => {
+                self.list_view.remove_char();
+            }
+            KeyCode::Char(ch) => {
+                self.list_view.add_char(ch);
+            }
+            _ => {}
         }
         Ok(())
     }
