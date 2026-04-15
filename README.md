@@ -86,3 +86,12 @@ At this point, the TUI is usable for me, but if there is some feature you would 
 
 ### Config Reference
 - For the color customization options outside of the named colors, I use the Ratatui indexed colors. You can see how the numbers correspond to the colors [here](https://github.com/ratatui/ratatui/blob/main/examples/README.md#color-explorer).
+- `open_in_editor: true` makes the insert/edit key open the task as markdown in the executable configured by `editor_path`, for example `~/nvim-macos-arm64/bin/nvim`.
+- `file-mode` can mirror recent tasks into markdown files while keeping `task_manager_data.json` as the primary source of truth:
+  ```yaml
+  file-mode:
+    enabled: true
+    path: "tasks"
+    years: 1
+  ```
+- In file mode, current-year files are written as `path/week-[week]/[task name]--[task id].md`; older included years are written as `path/[year]/week-[week]/[task name]--[task id].md`.
