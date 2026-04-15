@@ -157,6 +157,7 @@ struct App {
     show_keybinds: bool,                    // runtime toggle for keybind help
     status_message: Option<String>,         // surface transient status information
     search_context: Option<SearchContext>,  // track active search results
+    needs_terminal_clear: bool,             // clear stale editor output after returning to TUI
 }
 
 impl App {
@@ -194,6 +195,7 @@ impl App {
             show_keybinds,
             status_message: None,
             search_context: None,
+            needs_terminal_clear: false,
         }
     }
 
@@ -235,6 +237,7 @@ impl App {
             Err(err) => self.set_status_message(format!("Editor failed: {}", err)),
         }
 
+        self.needs_terminal_clear = true;
         self.mode = AppMode::Normal;
         Ok(())
     }
@@ -1528,6 +1531,10 @@ impl App {
 
     fn run(mut self, mut terminal: DefaultTerminal) -> Result<()> {
         loop {
+            if self.needs_terminal_clear {
+                terminal.clear()?;
+                self.needs_terminal_clear = false;
+            }
             terminal.draw(|frame| self.render(frame))?;
 
             if self.should_exit {
@@ -1781,9 +1788,6 @@ fn expand_home(path: &str) -> PathBuf {
 
 fn task_state_to_markdown(state: &TaskEditState) -> String {
     let mut markdown = String::new();
-    if let Some(task_id) = &state.task_id {
-        markdown.push_str(&format!("<!-- taskim-id: {} -->\n", task_id));
-    }
     markdown.push_str(&format!("# {}\n\n", state.title));
     markdown.push_str(&state.content);
     markdown
@@ -1795,10 +1799,6 @@ fn markdown_to_task_state(markdown: &str, mut state: TaskEditState) -> Option<Ta
     let mut content_lines = Vec::new();
 
     for line in lines.by_ref() {
-        if line.trim_start().starts_with("<!-- taskim-id:") {
-            continue;
-        }
-
         if let Some(rest) = line.strip_prefix("# ") {
             title = Some(rest.trim().to_string());
             break;

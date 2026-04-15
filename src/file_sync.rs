@@ -19,7 +19,7 @@ pub fn sync_from_files(data: &mut TaskData, config: &FileModeConfig) -> Result<b
     let mut changed = false;
     for path in markdown_files(&root)? {
         let content = fs::read_to_string(&path)?;
-        let Some(task_id) = extract_task_id(&content) else {
+        let Some(task_id) = extract_task_id_from_path(&path) else {
             continue;
         };
 
@@ -88,7 +88,7 @@ fn expected_paths<'a>(
         }
         dir = dir.join(week);
 
-        let base_name = sanitize_file_name(&task.title);
+        let base_name = format!("{}--{}", sanitize_file_name(&task.title), task.id);
         let mut candidate = dir.join(format!("{}.md", base_name));
         let mut suffix = 2;
         while used_paths.contains(&candidate) {
@@ -109,8 +109,7 @@ fn remove_stale_taskim_files(root: &Path, expected_paths: &HashMap<String, PathB
             continue;
         }
 
-        let content = fs::read_to_string(&path)?;
-        if extract_task_id(&content).is_some() {
+        if extract_task_id_from_path(&path).is_some() || file_has_legacy_task_id(&path)? {
             fs::remove_file(path)?;
         }
     }
@@ -146,10 +145,7 @@ fn task_to_markdown(task: &Task) -> String {
         .first()
         .map(|comment| comment.text.as_str())
         .unwrap_or("");
-    format!(
-        "<!-- taskim-id: {} -->\n# {}\n\n{}",
-        task.id, task.title, content
-    )
+    format!("# {}\n\n{}", task.title, content)
 }
 
 fn apply_markdown_to_task(task: &mut Task, markdown: &str) -> bool {
@@ -186,10 +182,6 @@ fn parse_markdown(markdown: &str) -> (String, String) {
     let mut content_lines = Vec::new();
 
     for line in lines.by_ref() {
-        if line.trim_start().starts_with("<!-- taskim-id:") {
-            continue;
-        }
-
         if let Some(rest) = line.strip_prefix("# ") {
             title = rest.trim().to_string();
             break;
@@ -213,17 +205,22 @@ fn parse_markdown(markdown: &str) -> (String, String) {
     (title, content_lines.join("\n").trim_end().to_string())
 }
 
-fn extract_task_id(markdown: &str) -> Option<String> {
-    for line in markdown.lines().take(5) {
-        let line = line.trim();
-        if let Some(rest) = line.strip_prefix("<!-- taskim-id:") {
-            return rest
-                .strip_suffix("-->")
-                .map(|id| id.trim().to_string())
-                .filter(|id| !id.is_empty());
-        }
+fn extract_task_id_from_path(path: &Path) -> Option<String> {
+    let stem = path.file_stem()?.to_str()?;
+    let (_, task_id) = stem.rsplit_once("--")?;
+    if task_id.is_empty() {
+        None
+    } else {
+        Some(task_id.to_string())
     }
-    None
+}
+
+fn file_has_legacy_task_id(path: &Path) -> Result<bool> {
+    let content = fs::read_to_string(path)?;
+    Ok(content
+        .lines()
+        .take(5)
+        .any(|line| line.trim_start().starts_with("<!-- taskim-id:")))
 }
 
 fn sanitize_file_name(title: &str) -> String {
