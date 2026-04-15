@@ -32,6 +32,9 @@ use ratatui::{
     DefaultTerminal, Frame,
 };
 use std::collections::HashMap;
+use std::fs;
+use std::path::{Path, PathBuf};
+use std::process::Command;
 use uuid::Uuid;
 
 #[derive(Debug, Clone)]
@@ -188,6 +191,104 @@ impl App {
         self.status_message = Some(message.into());
     }
 
+    fn edit_with_configured_editor(&mut self, state: TaskEditState) -> Result<()> {
+        let Some(editor_path) = self.config.editor_path.as_deref() else {
+            self.mode = AppMode::TaskEdit(state);
+            self.set_status_message("Set editor_path before enabling open_in_editor.");
+            return Ok(());
+        };
+
+        let editor_path = expand_home(editor_path);
+        if editor_path.as_os_str().is_empty() {
+            self.mode = AppMode::TaskEdit(state);
+            self.set_status_message("Set editor_path before enabling open_in_editor.");
+            return Ok(());
+        }
+
+        match self.run_editor_for_state(state, &editor_path) {
+            Ok(Some(saved_state)) => self.save_task_edit_state(saved_state)?,
+            Ok(None) => {}
+            Err(err) => self.set_status_message(format!("Editor failed: {}", err)),
+        }
+
+        self.mode = AppMode::Normal;
+        Ok(())
+    }
+
+    fn run_editor_for_state(
+        &mut self,
+        state: TaskEditState,
+        editor_path: &Path,
+    ) -> Result<Option<TaskEditState>> {
+        let edit_file = std::env::temp_dir().join(format!(
+            "taskim-{}.md",
+            state
+                .task_id
+                .clone()
+                .unwrap_or_else(|| Uuid::new_v4().to_string())
+        ));
+        fs::write(&edit_file, task_state_to_markdown(&state))?;
+
+        ratatui::restore();
+        let status = Command::new(editor_path).arg(&edit_file).status();
+        let _terminal = ratatui::init();
+
+        match status {
+            Ok(status) if status.success() => {
+                let content = fs::read_to_string(&edit_file)?;
+                let _ = fs::remove_file(&edit_file);
+                Ok(markdown_to_task_state(&content, state))
+            }
+            Ok(status) => {
+                let _ = fs::remove_file(&edit_file);
+                Err(color_eyre::eyre::eyre!(
+                    "editor exited with status {}",
+                    status
+                ))
+            }
+            Err(err) => {
+                let _ = fs::remove_file(&edit_file);
+                Err(err.into())
+            }
+        }
+    }
+
+    fn save_task_edit_state(&mut self, new_state: TaskEditState) -> Result<()> {
+        let mut task = new_state.to_task();
+        if new_state.is_new_task {
+            if let Some(insert_order) = self.pending_insert_order.take() {
+                self.data.insert_task_at_order(task.clone(), insert_order);
+                let task_date = task.start.date_naive();
+                self.month_view
+                    .select_task_by_order(task_date, insert_order, &self.data.events);
+            } else {
+                let task_date = task.start.date_naive();
+                task.order = self.data.max_order_for_date(task_date) + 1;
+                self.data.events.push(task.clone());
+            }
+
+            self.undo_stack
+                .push(Operation::CreateTask { task: task.clone() });
+        } else if let Some(existing) = self
+            .data
+            .events
+            .iter_mut()
+            .find(|t| Some(&t.id) == new_state.task_id.as_ref())
+        {
+            let old_task = existing.clone();
+            *existing = task.clone();
+
+            self.undo_stack.push(Operation::EditTask {
+                task_id: task.id.clone(),
+                old_task,
+                new_task: task,
+            });
+        }
+
+        self.save()?;
+        Ok(())
+    }
+
     fn handle_key_event(&mut self, key: crossterm::event::KeyEvent) -> Result<()> {
         match &self.mode {
             AppMode::Normal => self.handle_normal_mode_key(key)?,
@@ -215,50 +316,8 @@ impl App {
             AppMode::TaskEdit(state) => {
                 let mut new_state = state.clone();
                 if self.handle_task_edit_key(key, &mut new_state)? {
-                    // Task edit completed
-                    let mut task = new_state.to_task();
-                    if new_state.is_new_task {
-                        // Use pending insert order if set (for 'o' and 'O' commands)
-                        if let Some(insert_order) = self.pending_insert_order.take() {
-                            self.data.insert_task_at_order(task.clone(), insert_order);
-
-                            // Select the new task by its order
-                            let task_date = task.start.date_naive();
-                            self.month_view.select_task_by_order(
-                                task_date,
-                                insert_order,
-                                &self.data.events,
-                            );
-                        } else {
-                            // Regular insertion (for 'i' command) - add to end
-                            let task_date = task.start.date_naive();
-                            task.order = self.data.max_order_for_date(task_date) + 1;
-                            self.data.events.push(task.clone());
-                        }
-
-                        // Track task creation
-                        self.undo_stack
-                            .push(Operation::CreateTask { task: task.clone() });
-                    } else {
-                        // Track task edit
-                        if let Some(existing) = self
-                            .data
-                            .events
-                            .iter_mut()
-                            .find(|t| Some(&t.id) == new_state.task_id.as_ref())
-                        {
-                            let old_task = existing.clone();
-                            *existing = task.clone();
-
-                            self.undo_stack.push(Operation::EditTask {
-                                task_id: task.id.clone(),
-                                old_task,
-                                new_task: task,
-                            });
-                        }
-                    }
+                    self.save_task_edit_state(new_state)?;
                     self.mode = AppMode::Normal;
-                    self.save()?;
                 } else {
                     self.mode = AppMode::TaskEdit(new_state);
                 }
@@ -366,13 +425,21 @@ impl App {
                 SelectionType::Day(date) => {
                     // Create new task
                     let edit_state = TaskEditState::new_task(*date);
-                    self.mode = AppMode::TaskEdit(edit_state);
+                    if self.config.open_in_editor {
+                        self.edit_with_configured_editor(edit_state)?;
+                    } else {
+                        self.mode = AppMode::TaskEdit(edit_state);
+                    }
                 }
                 SelectionType::Task(task_id) => {
                     // Edit existing task
                     if let Some(task) = self.data.events.iter().find(|t| &t.id == task_id) {
                         let edit_state = TaskEditState::edit_task(task);
-                        self.mode = AppMode::TaskEdit(edit_state);
+                        if self.config.open_in_editor {
+                            self.edit_with_configured_editor(edit_state)?;
+                        } else {
+                            self.mode = AppMode::TaskEdit(edit_state);
+                        }
                     }
                 }
             }
@@ -382,7 +449,11 @@ impl App {
                     // Edit existing task (same as insert_edit for task)
                     if let Some(task) = self.data.events.iter().find(|t| &t.id == task_id) {
                         let edit_state = TaskEditState::edit_task(task);
-                        self.mode = AppMode::TaskEdit(edit_state);
+                        if self.config.open_in_editor {
+                            self.edit_with_configured_editor(edit_state)?;
+                        } else {
+                            self.mode = AppMode::TaskEdit(edit_state);
+                        }
                     }
                 }
                 _ => {}
@@ -1668,4 +1739,65 @@ fn main() -> Result<()> {
     let result = app.run(terminal);
     ratatui::restore();
     result
+}
+
+fn expand_home(path: &str) -> PathBuf {
+    if path == "~" {
+        if let Some(home) = std::env::var_os("HOME") {
+            return PathBuf::from(home);
+        }
+    } else if let Some(rest) = path.strip_prefix("~/") {
+        if let Some(home) = std::env::var_os("HOME") {
+            return PathBuf::from(home).join(rest);
+        }
+    }
+    PathBuf::from(path)
+}
+
+fn task_state_to_markdown(state: &TaskEditState) -> String {
+    let mut markdown = String::new();
+    if let Some(task_id) = &state.task_id {
+        markdown.push_str(&format!("<!-- taskim-id: {} -->\n", task_id));
+    }
+    markdown.push_str(&format!("# {}\n\n", state.title));
+    markdown.push_str(&state.content);
+    markdown
+}
+
+fn markdown_to_task_state(markdown: &str, mut state: TaskEditState) -> Option<TaskEditState> {
+    let mut lines = markdown.lines();
+    let mut title = None;
+    let mut content_lines = Vec::new();
+
+    for line in lines.by_ref() {
+        if line.trim_start().starts_with("<!-- taskim-id:") {
+            continue;
+        }
+
+        if let Some(rest) = line.strip_prefix("# ") {
+            title = Some(rest.trim().to_string());
+            break;
+        }
+
+        if !line.trim().is_empty() {
+            title = Some(line.trim().to_string());
+            break;
+        }
+    }
+
+    content_lines.extend(lines.map(ToString::to_string));
+    while content_lines
+        .first()
+        .map(|line| line.trim().is_empty())
+        .unwrap_or(false)
+    {
+        content_lines.remove(0);
+    }
+
+    state.title = title.unwrap_or_default();
+    if state.title.trim().is_empty() {
+        return None;
+    }
+    state.content = content_lines.join("\n").trim_end().to_string();
+    Some(state)
 }

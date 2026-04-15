@@ -13,6 +13,8 @@ use std::path::Path;
 #[derive(Debug, Clone, Deserialize)]
 pub struct ConfigFile {
     pub show_keybinds: Option<bool>,
+    pub open_in_editor: Option<bool>,
+    pub editor_path: Option<String>,
     pub colors: Option<HashMap<String, String>>,
     pub task_edit_colors: Option<HashMap<String, String>>,
     pub keybindings: Option<HashMap<String, serde_yaml::Value>>,
@@ -107,6 +109,8 @@ pub struct Config {
     pub force_quit: KeyBinding,
     // New config fields
     pub show_keybinds: bool,
+    pub open_in_editor: bool,
+    pub editor_path: Option<String>,
     pub ui_colors: UiColors,
     pub task_edit_colors: TaskEditColors,
 }
@@ -118,6 +122,11 @@ impl Config {
     }
     pub fn from_config_file(file: Option<ConfigFile>) -> Self {
         let show_keybinds = file.as_ref().and_then(|f| f.show_keybinds).unwrap_or(true);
+        let open_in_editor = file
+            .as_ref()
+            .and_then(|f| f.open_in_editor)
+            .unwrap_or(false);
+        let editor_path = file.as_ref().and_then(|f| f.editor_path.clone());
         let colors = file.as_ref().and_then(|f| f.colors.as_ref()).cloned();
         let task_edit_colors_map = file
             .as_ref()
@@ -208,6 +217,8 @@ impl Config {
             quit_alt: keybindings_map["quit_alt"].clone(),
             force_quit: keybindings_map["force_quit"].clone(),
             show_keybinds,
+            open_in_editor,
+            editor_path,
             ui_colors,
             task_edit_colors,
         }
