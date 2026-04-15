@@ -1,6 +1,7 @@
 mod commands;
 mod config;
 mod data;
+mod file_sync;
 mod month_view;
 mod recurrence;
 mod task;
@@ -160,10 +161,24 @@ struct App {
 
 impl App {
     fn new() -> Self {
-        let data = load_data();
+        let config = crate::config::Config::from_file_or_default("config.yml");
+        let mut data = load_data();
+        if config.file_mode.enabled {
+            match file_sync::sync_from_files(&mut data, &config.file_mode) {
+                Ok(true) => {
+                    if let Err(err) = save_data(&data) {
+                        eprintln!("Error saving data file: {}", err);
+                    }
+                }
+                Ok(false) => {}
+                Err(err) => eprintln!("Error syncing task files: {}", err),
+            }
+            if let Err(err) = file_sync::export_files(&data, &config.file_mode) {
+                eprintln!("Error exporting task files: {}", err);
+            }
+        }
         let current_date = Local::now().date_naive();
         let month_view = MonthView::new(current_date);
-        let config = crate::config::Config::from_file_or_default("config.yml");
         let show_keybinds = config.show_keybinds;
         Self {
             mode: AppMode::Normal,
@@ -184,11 +199,20 @@ impl App {
 
     fn save(&self) -> Result<()> {
         save_data(&self.data).map_err(|e| color_eyre::eyre::eyre!(e))?;
+        file_sync::export_files(&self.data, &self.config.file_mode)?;
         Ok(())
     }
 
     fn set_status_message<S: Into<String>>(&mut self, message: S) {
         self.status_message = Some(message.into());
+    }
+
+    fn sync_file_mode_changes(&mut self) -> Result<()> {
+        if file_sync::sync_from_files(&mut self.data, &self.config.file_mode)? {
+            save_data(&self.data).map_err(|e| color_eyre::eyre::eyre!(e))?;
+            file_sync::export_files(&self.data, &self.config.file_mode)?;
+        }
+        Ok(())
     }
 
     fn edit_with_configured_editor(&mut self, state: TaskEditState) -> Result<()> {
@@ -1512,6 +1536,7 @@ impl App {
 
             if let Ok(event) = event::read() {
                 if let Event::Key(key_event) = event {
+                    self.sync_file_mode_changes()?;
                     self.handle_key_event(key_event)?;
                 }
             }

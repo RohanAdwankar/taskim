@@ -15,9 +15,18 @@ pub struct ConfigFile {
     pub show_keybinds: Option<bool>,
     pub open_in_editor: Option<bool>,
     pub editor_path: Option<String>,
+    #[serde(rename = "file-mode")]
+    pub file_mode: Option<FileModeConfigFile>,
     pub colors: Option<HashMap<String, String>>,
     pub task_edit_colors: Option<HashMap<String, String>>,
     pub keybindings: Option<HashMap<String, serde_yaml::Value>>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct FileModeConfigFile {
+    pub enabled: Option<bool>,
+    pub path: Option<String>,
+    pub years: Option<i32>,
 }
 
 // --- Runtime keybinding struct ---
@@ -66,6 +75,13 @@ pub struct TaskEditColors {
 }
 
 #[derive(Debug, Clone)]
+pub struct FileModeConfig {
+    pub enabled: bool,
+    pub path: String,
+    pub years: i32,
+}
+
+#[derive(Debug, Clone)]
 pub struct Config {
     // Navigation
     pub move_left: KeyBinding,
@@ -111,6 +127,7 @@ pub struct Config {
     pub show_keybinds: bool,
     pub open_in_editor: bool,
     pub editor_path: Option<String>,
+    pub file_mode: FileModeConfig,
     pub ui_colors: UiColors,
     pub task_edit_colors: TaskEditColors,
 }
@@ -127,6 +144,22 @@ impl Config {
             .and_then(|f| f.open_in_editor)
             .unwrap_or(false);
         let editor_path = file.as_ref().and_then(|f| f.editor_path.clone());
+        let file_mode_config = file.as_ref().and_then(|f| f.file_mode.clone());
+        let file_mode = FileModeConfig {
+            enabled: file_mode_config
+                .as_ref()
+                .and_then(|f| f.enabled)
+                .unwrap_or(false),
+            path: file_mode_config
+                .as_ref()
+                .and_then(|f| f.path.clone())
+                .unwrap_or_else(|| "tasks".to_string()),
+            years: file_mode_config
+                .as_ref()
+                .and_then(|f| f.years)
+                .unwrap_or(1)
+                .max(0),
+        };
         let colors = file.as_ref().and_then(|f| f.colors.as_ref()).cloned();
         let task_edit_colors_map = file
             .as_ref()
@@ -219,6 +252,7 @@ impl Config {
             show_keybinds,
             open_in_editor,
             editor_path,
+            file_mode,
             ui_colors,
             task_edit_colors,
         }
