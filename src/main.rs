@@ -1800,14 +1800,11 @@ impl App {
     }
 
     fn render_preview(&self, frame: &mut Frame, area: Rect, tasks: &[Task]) {
-        let block = Block::default()
-            .title("Preview")
-            .borders(Borders::ALL)
-            .style(
-                Style::default()
-                    .fg(self.config.ui_colors.selected_task_bg)
-                    .bg(self.config.ui_colors.default_bg),
-            );
+        let block = Block::default().borders(Borders::ALL).style(
+            Style::default()
+                .fg(self.config.ui_colors.selected_task_bg)
+                .bg(self.config.ui_colors.default_bg),
+        );
         let inner = block.inner(area);
         frame.render_widget(block, area);
 
