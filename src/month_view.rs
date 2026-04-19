@@ -460,7 +460,7 @@ impl MonthView {
 }
 
 // Helper function to scramble text with numbers while preserving length
-fn scramble_text(text: &str, scramble_mode: bool) -> String {
+pub(crate) fn scramble_text(text: &str, scramble_mode: bool) -> String {
     if !scramble_mode {
         return text.to_string();
     }

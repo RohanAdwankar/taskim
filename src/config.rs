@@ -13,6 +13,7 @@ use std::path::Path;
 #[derive(Debug, Clone, Deserialize)]
 pub struct ConfigFile {
     pub show_keybinds: Option<bool>,
+    pub show_preview: Option<bool>,
     pub open_in_editor: Option<bool>,
     pub editor_path: Option<String>,
     #[serde(rename = "file-mode")]
@@ -125,6 +126,7 @@ pub struct Config {
     pub force_quit: KeyBinding,
     // New config fields
     pub show_keybinds: bool,
+    pub show_preview: bool,
     pub open_in_editor: bool,
     pub editor_path: Option<String>,
     pub file_mode: FileModeConfig,
@@ -139,6 +141,7 @@ impl Config {
     }
     pub fn from_config_file(file: Option<ConfigFile>) -> Self {
         let show_keybinds = file.as_ref().and_then(|f| f.show_keybinds).unwrap_or(true);
+        let show_preview = file.as_ref().and_then(|f| f.show_preview).unwrap_or(false);
         let open_in_editor = file
             .as_ref()
             .and_then(|f| f.open_in_editor)
@@ -250,6 +253,7 @@ impl Config {
             quit_alt: keybindings_map["quit_alt"].clone(),
             force_quit: keybindings_map["force_quit"].clone(),
             show_keybinds,
+            show_preview,
             open_in_editor,
             editor_path,
             file_mode,
@@ -288,11 +292,16 @@ impl Config {
         ));
         spans.push(Span::raw(": Toggle Complete | "));
 
-        // Yank/Paste
+        // Yank/Preview
         spans.push(Span::styled("y", Style::default().fg(self.yank.color)));
         spans.push(Span::raw(": Yank | "));
         spans.push(Span::styled("p", Style::default().fg(self.paste.color)));
-        spans.push(Span::raw(": Paste | "));
+        spans.push(Span::raw(": Preview | "));
+        spans.push(Span::styled(
+            "P",
+            Style::default().fg(self.paste_above.color),
+        ));
+        spans.push(Span::raw(": Paste Above | "));
 
         // Undo/Redo (only show if available)
         if can_undo {
@@ -356,6 +365,43 @@ impl ConfigFile {
         let content = fs::read_to_string(path).ok()?;
         serde_yaml::from_str(&content).ok()
     }
+}
+
+pub fn save_bool_preference<P: AsRef<Path>>(path: P, key: &str, value: bool) -> Result<(), String> {
+    let path = path.as_ref();
+    let mut lines = match fs::read_to_string(path) {
+        Ok(content) => content.lines().map(str::to_string).collect::<Vec<_>>(),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Vec::new(),
+        Err(err) => return Err(format!("Failed to read config: {}", err)),
+    };
+
+    let new_line = format!("{}: {}", key, value);
+    let prefix = format!("{}:", key);
+
+    if let Some(index) = lines
+        .iter()
+        .position(|line| line.trim_start().starts_with(&prefix))
+    {
+        lines[index] = new_line;
+    } else if let Some(index) = lines
+        .iter()
+        .position(|line| line.trim_start().starts_with("show_keybinds:"))
+    {
+        lines.insert(index + 1, new_line);
+    } else {
+        if !lines.is_empty() && !lines.last().is_some_and(|line| line.is_empty()) {
+            lines.push(String::new());
+        }
+        lines.push(new_line);
+    }
+
+    let output = if lines.is_empty() {
+        String::new()
+    } else {
+        format!("{}\n", lines.join("\n"))
+    };
+
+    fs::write(path, output).map_err(|err| format!("Failed to write config: {}", err))
 }
 
 fn parse_color(map: &Option<HashMap<String, String>>, key: &str, default: Color) -> Color {

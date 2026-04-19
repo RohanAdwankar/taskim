@@ -90,6 +90,34 @@ pub fn get_command_registry() -> HashMap<&'static str, CommandInfo> {
         },
     );
     map.insert(
+        "showpreview",
+        CommandInfo {
+            description: "Show the preview sidebar and save it to config.",
+            exec: |app, _| app.set_preview_preference(true),
+        },
+    );
+    map.insert(
+        "set showpreview",
+        CommandInfo {
+            description: "Show the preview sidebar and save it to config.",
+            exec: |app, _| app.set_preview_preference(true),
+        },
+    );
+    map.insert(
+        "hidepreview",
+        CommandInfo {
+            description: "Hide the preview sidebar and save it to config.",
+            exec: |app, _| app.set_preview_preference(false),
+        },
+    );
+    map.insert(
+        "set hidepreview",
+        CommandInfo {
+            description: "Hide the preview sidebar and save it to config.",
+            exec: |app, _| app.set_preview_preference(false),
+        },
+    );
+    map.insert(
         "wrap",
         CommandInfo {
             description: "Enable UI text wrapping.",

@@ -29,7 +29,7 @@ use ratatui::{
     layout::{Constraint, Layout, Rect},
     style::Style,
     text::{Line, Span},
-    widgets::Paragraph,
+    widgets::{Block, Borders, Paragraph, Wrap},
     DefaultTerminal, Frame,
 };
 use std::collections::HashMap;
@@ -37,6 +37,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use uuid::Uuid;
+
+const CONFIG_PATH: &str = "config.yml";
 
 #[derive(Debug, Clone)]
 enum AppMode {
@@ -154,6 +156,7 @@ struct App {
     pending_insert_order: Option<u32>,      // For tracking task insertion order
     scramble_mode: bool,                    // Toggle for scrambling task names with numbers
     config: crate::config::Config,          // <-- add config field
+    show_preview: bool,                     // runtime toggle for preview sidebar
     show_keybinds: bool,                    // runtime toggle for keybind help
     status_message: Option<String>,         // surface transient status information
     search_context: Option<SearchContext>,  // track active search results
@@ -162,7 +165,7 @@ struct App {
 
 impl App {
     fn new() -> Self {
-        let config = crate::config::Config::from_file_or_default("config.yml");
+        let config = crate::config::Config::from_file_or_default(CONFIG_PATH);
         let mut data = load_data();
         if config.file_mode.enabled {
             match file_sync::sync_from_files(&mut data, &config.file_mode) {
@@ -181,6 +184,7 @@ impl App {
         let current_date = Local::now().date_naive();
         let month_view = MonthView::new(current_date);
         let show_keybinds = config.show_keybinds;
+        let show_preview = config.show_preview;
         Self {
             mode: AppMode::Normal,
             data,
@@ -192,6 +196,7 @@ impl App {
             pending_insert_order: None,
             scramble_mode: false,
             config,
+            show_preview,
             show_keybinds,
             status_message: None,
             search_context: None,
@@ -207,6 +212,27 @@ impl App {
 
     fn set_status_message<S: Into<String>>(&mut self, message: S) {
         self.status_message = Some(message.into());
+    }
+
+    fn set_preview_preference(&mut self, enabled: bool) -> Result<(), String> {
+        self.show_preview = enabled;
+        self.config.show_preview = enabled;
+        crate::config::save_bool_preference(CONFIG_PATH, "show_preview", enabled)?;
+        self.set_status_message(if enabled {
+            "Preview sidebar shown."
+        } else {
+            "Preview sidebar hidden."
+        });
+        Ok(())
+    }
+
+    fn toggle_preview_session(&mut self) {
+        self.show_preview = !self.show_preview;
+        self.set_status_message(if self.show_preview {
+            "Preview sidebar shown for this session."
+        } else {
+            "Preview sidebar hidden for this session."
+        });
     }
 
     fn sync_file_mode_changes(&mut self) -> Result<()> {
@@ -824,6 +850,8 @@ impl App {
             || (key.code == KeyCode::Char('n') && key.modifiers.contains(KeyModifiers::SHIFT))
         {
             self.navigate_search(SearchDirection::Backward);
+        } else if key.code == KeyCode::Char('p') && key.modifiers == KeyModifiers::NONE {
+            self.toggle_preview_session();
         } else if key.code == KeyCode::Char('s') && key.modifiers == KeyModifiers::NONE {
             // Toggle scramble mode
             self.scramble_mode = !self.scramble_mode;
@@ -1566,16 +1594,25 @@ impl App {
         ])
         .split(area);
 
-        // Render main content
+        let content_layout = if self.show_preview {
+            Layout::horizontal([Constraint::Min(0), Constraint::Length(32)]).split(layout[0])
+        } else {
+            Layout::horizontal([Constraint::Min(0)]).split(layout[0])
+        };
+
         let display_tasks = self.build_display_tasks();
         render_month_view(
             frame,
-            layout[0],
+            content_layout[0],
             &self.month_view,
             &display_tasks,
             self.scramble_mode,
             &self.config,
         );
+
+        if self.show_preview && content_layout.len() > 1 {
+            self.render_preview(frame, content_layout[1], &display_tasks);
+        }
 
         // Render footer
         self.render_footer(frame, layout[1]);
@@ -1660,9 +1697,19 @@ impl App {
                                 ":set nowrap",
                                 Style::default().fg(self.config.ui_colors.selected_task_bg),
                             ),
-                            Span::raw(" - Disable text wrapping"),
+                            Span::raw(" - Disable text wrapping | "),
+                            Span::styled(
+                                ":showpreview",
+                                Style::default().fg(self.config.ui_colors.selected_task_bg),
+                            ),
+                            Span::raw(" - Show preview"),
                         ]),
                         Line::from(vec![
+                            Span::styled(
+                                ":hidepreview",
+                                Style::default().fg(self.config.ui_colors.selected_task_bg),
+                            ),
+                            Span::raw(" - Hide preview | "),
                             Span::styled(
                                 ":help",
                                 Style::default()
@@ -1760,6 +1807,52 @@ impl App {
                     .style(Style::default().fg(self.config.ui_colors.default_fg));
                 frame.render_widget(footer, area);
             }
+        }
+    }
+
+    fn render_preview(&self, frame: &mut Frame, area: Rect, tasks: &[Task]) {
+        let block = Block::default()
+            .title("Preview")
+            .borders(Borders::ALL)
+            .style(
+                Style::default()
+                    .fg(self.config.ui_colors.selected_task_bg)
+                    .bg(self.config.ui_colors.default_bg),
+            );
+        let inner = block.inner(area);
+        frame.render_widget(block, area);
+
+        if inner.width == 0 || inner.height == 0 {
+            return;
+        }
+
+        let content = self.preview_text(tasks);
+        let paragraph = Paragraph::new(content)
+            .style(Style::default().fg(self.config.ui_colors.default_fg))
+            .wrap(Wrap { trim: false });
+        frame.render_widget(paragraph, inner);
+    }
+
+    fn preview_text(&self, tasks: &[Task]) -> String {
+        let Some(task_id) = self.month_view.get_selected_task_id() else {
+            return String::new();
+        };
+
+        let Some(task) = tasks.iter().find(|task| task.id == task_id) else {
+            return String::new();
+        };
+
+        let title = crate::month_view::scramble_text(&task.title, self.scramble_mode);
+        let content = task
+            .comments
+            .first()
+            .map(|comment| crate::month_view::scramble_text(&comment.text, self.scramble_mode))
+            .unwrap_or_default();
+
+        if content.is_empty() {
+            title
+        } else {
+            format!("{}\n\n{}", title, content)
         }
     }
 }
