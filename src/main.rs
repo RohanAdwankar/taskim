@@ -27,7 +27,7 @@ use color_eyre::Result;
 use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
 use ratatui::{
     layout::{Constraint, Layout, Rect},
-    style::Style,
+    style::{Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Paragraph, Wrap},
     DefaultTerminal, Frame,
@@ -1819,13 +1819,13 @@ impl App {
         frame.render_widget(paragraph, inner);
     }
 
-    fn preview_text(&self, tasks: &[Task]) -> String {
+    fn preview_text(&self, tasks: &[Task]) -> Vec<Line<'static>> {
         let Some(task_id) = self.month_view.get_selected_task_id() else {
-            return String::new();
+            return Vec::new();
         };
 
         let Some(task) = tasks.iter().find(|task| task.id == task_id) else {
-            return String::new();
+            return Vec::new();
         };
 
         let title = crate::month_view::scramble_text(&task.title, self.scramble_mode);
@@ -1835,10 +1835,17 @@ impl App {
             .map(|comment| crate::month_view::scramble_text(&comment.text, self.scramble_mode))
             .unwrap_or_default();
 
+        let mut lines = vec![Line::from(vec![Span::styled(
+            title,
+            Style::default().add_modifier(Modifier::BOLD),
+        )])];
+
         if content.is_empty() {
-            title
+            lines
         } else {
-            format!("{}\n\n{}", title, content)
+            lines.push(Line::raw(""));
+            lines.extend(content.lines().map(|line| Line::raw(line.to_string())));
+            lines
         }
     }
 }
