@@ -292,11 +292,11 @@ impl Config {
         ));
         spans.push(Span::raw(": Toggle Complete | "));
 
-        // Yank/Preview
+        // Yank/Paste
         spans.push(Span::styled("y", Style::default().fg(self.yank.color)));
         spans.push(Span::raw(": Yank | "));
         spans.push(Span::styled("p", Style::default().fg(self.paste.color)));
-        spans.push(Span::raw(": Preview | "));
+        spans.push(Span::raw(": Paste | "));
         spans.push(Span::styled(
             "P",
             Style::default().fg(self.paste_above.color),

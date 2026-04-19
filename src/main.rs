@@ -226,15 +226,6 @@ impl App {
         Ok(())
     }
 
-    fn toggle_preview_session(&mut self) {
-        self.show_preview = !self.show_preview;
-        self.set_status_message(if self.show_preview {
-            "Preview sidebar shown for this session."
-        } else {
-            "Preview sidebar hidden for this session."
-        });
-    }
-
     fn sync_file_mode_changes(&mut self) -> Result<()> {
         if file_sync::sync_from_files(&mut self.data, &self.config.file_mode)? {
             save_data(&self.data).map_err(|e| color_eyre::eyre::eyre!(e))?;
@@ -850,8 +841,6 @@ impl App {
             || (key.code == KeyCode::Char('n') && key.modifiers.contains(KeyModifiers::SHIFT))
         {
             self.navigate_search(SearchDirection::Backward);
-        } else if key.code == KeyCode::Char('p') && key.modifiers == KeyModifiers::NONE {
-            self.toggle_preview_session();
         } else if key.code == KeyCode::Char('s') && key.modifiers == KeyModifiers::NONE {
             // Toggle scramble mode
             self.scramble_mode = !self.scramble_mode;

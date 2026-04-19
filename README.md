@@ -15,7 +15,7 @@ Taskim is a terminal-based task manager built with Rust and [ratatui](https://gi
   - Reorder tasks within a day.
 - **Vim-style Keybindings:**  
   - Navigate with `h`, `j`, `k`, `l` or arrow keys.
-  - Insert tasks above/below (`O`/`o`), delete (`dd`/`x`), yank/copy (`y`), toggle the preview sidebar (`p`), paste above (`P`), and undo/redo (`u/control-r`).
+  - Insert tasks above/below (`O`/`o`), delete (`dd`/`x`), yank/copy (`y`), paste (`p`/`P`), and undo/redo (`u/control-r`).
   - Command mode (`:`) for advanced actions (e.g., go to date, toggle wrap, show/hide keybinds, persist preview visibility).
   - Search tasks with `/` and move through matches with `n`/`N`. 
 - **Recurring Tasks:**  
@@ -93,7 +93,7 @@ At this point, the TUI is usable for me, but if there is some feature you would 
 ### Config Reference
 - For the color customization options outside of the named colors, I use the Ratatui indexed colors. You can see how the numbers correspond to the colors [here](https://github.com/ratatui/ratatui/blob/main/examples/README.md#color-explorer).
 - `open_in_editor: true` makes the insert/edit key open the task as markdown in the executable configured by `editor_path`, for example `~/nvim-macos-arm64/bin/nvim`.
-- `show_preview: true` makes the task preview sidebar visible when Taskim starts. The `p` key only affects the current session.
+- `show_preview: true` makes the task preview sidebar visible when Taskim starts.
 - `file-mode` can mirror recent tasks into markdown files while keeping `task_manager_data.json` as the primary source of truth:
   ```yaml
   file-mode:
