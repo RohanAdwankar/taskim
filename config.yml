@@ -3,7 +3,7 @@
 
 # UI settings
 show_keybinds: false # Whether to show keybinds in the UI by default
-show_preview: false  # Whether to show the preview sidebar by default
+show_preview: true
 wrap_text: false     # Whether to wrap text by default
 open_in_editor: true
 editor_path: "~/nvim-macos-arm64/bin/nvim"
