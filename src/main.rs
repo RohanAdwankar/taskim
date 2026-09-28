@@ -17,7 +17,9 @@ use crate::recurrence::{
 };
 use crate::task::Task;
 use crate::task::TaskData;
-use crate::task_edit::{render_task_edit_popup, TaskEditState};
+use crate::task_edit::{
+    handle_task_edit_key, render_task_edit_popup, TaskEditAction, TaskEditState,
+};
 use crate::undo::{Operation, UndoStack};
 use crate::utils::days_in_month;
 use commands::get_command_registry;
@@ -359,11 +361,16 @@ impl App {
             }
             AppMode::TaskEdit(state) => {
                 let mut new_state = state.clone();
-                if self.handle_task_edit_key(key, &mut new_state)? {
-                    self.save_task_edit_state(new_state)?;
-                    self.mode = AppMode::Normal;
-                } else {
-                    self.mode = AppMode::TaskEdit(new_state);
+                match handle_task_edit_key(&self.config, key, &mut new_state) {
+                    TaskEditAction::Continue => self.mode = AppMode::TaskEdit(new_state),
+                    TaskEditAction::Save => {
+                        self.save_task_edit_state(new_state)?;
+                        self.mode = AppMode::Normal;
+                    }
+                    TaskEditAction::Cancel => {
+                        self.pending_insert_order = None;
+                        self.mode = AppMode::Normal;
+                    }
                 }
             }
             AppMode::RecurrencePreview(state) => {
@@ -846,31 +853,6 @@ impl App {
             self.scramble_mode = !self.scramble_mode;
         }
         Ok(())
-    }
-
-    fn handle_task_edit_key(
-        &mut self,
-        key: crossterm::event::KeyEvent,
-        state: &mut TaskEditState,
-    ) -> Result<bool> {
-        if key.kind == KeyEventKind::Press {
-            if self.config.cancel_edit.matches(key.code, key.modifiers) {
-                // Cancel edit
-                return Ok(true);
-            } else if self.config.save_task.matches(key.code, key.modifiers) {
-                // Save task
-                if !state.title.trim().is_empty() {
-                    return Ok(true);
-                }
-            } else if self.config.switch_field.matches(key.code, key.modifiers) {
-                state.switch_field();
-            } else if self.config.backspace.matches(key.code, key.modifiers) {
-                state.remove_char();
-            } else if let KeyCode::Char(ch) = key.code {
-                state.add_char(ch);
-            }
-        }
-        Ok(false)
     }
 
     fn handle_command_mode_key(

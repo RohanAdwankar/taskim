@@ -1,5 +1,7 @@
+use crate::config::Config;
 use crate::task::Task;
 use chrono::{NaiveDate, TimeZone, Utc};
+use crossterm::event::{KeyCode, KeyEvent, KeyEventKind};
 use ratatui::{
     layout::{Constraint, Layout, Rect},
     style::{Modifier, Style},
@@ -25,6 +27,44 @@ pub struct TaskEditState {
 pub enum EditingField {
     Title,
     Content,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TaskEditAction {
+    Continue,
+    Save,
+    Cancel,
+}
+
+pub fn handle_task_edit_key(
+    config: &Config,
+    key: KeyEvent,
+    state: &mut TaskEditState,
+) -> TaskEditAction {
+    if key.kind != KeyEventKind::Press {
+        return TaskEditAction::Continue;
+    }
+
+    if config.cancel_edit.matches(key.code, key.modifiers) {
+        TaskEditAction::Cancel
+    } else if config.save_task.matches(key.code, key.modifiers) {
+        if state.title.trim().is_empty() {
+            TaskEditAction::Continue
+        } else {
+            TaskEditAction::Save
+        }
+    } else if config.switch_field.matches(key.code, key.modifiers) {
+        state.switch_field();
+        TaskEditAction::Continue
+    } else if config.backspace.matches(key.code, key.modifiers) {
+        state.remove_char();
+        TaskEditAction::Continue
+    } else if let KeyCode::Char(ch) = key.code {
+        state.add_char(ch);
+        TaskEditAction::Continue
+    } else {
+        TaskEditAction::Continue
+    }
 }
 
 impl TaskEditState {
@@ -277,4 +317,49 @@ fn centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {
         Constraint::Percentage((100 - percent_x) / 2),
     ])
     .split(popup_layout[1])[1]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+    fn state() -> TaskEditState {
+        TaskEditState::new_task(NaiveDate::from_ymd_opt(2026, 7, 11).unwrap())
+    }
+
+    #[test]
+    fn escape_cancels_without_modifying_the_state() {
+        let config = Config::from_config_file(None);
+        let mut state = state();
+        state.title = "Keep me unchanged".to_string();
+
+        let action = handle_task_edit_key(
+            &config,
+            KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
+            &mut state,
+        );
+
+        assert_eq!(action, TaskEditAction::Cancel);
+        assert_eq!(state.title, "Keep me unchanged");
+    }
+
+    #[test]
+    fn enter_only_saves_a_non_empty_title() {
+        let config = Config::from_config_file(None);
+        let mut empty_state = state();
+        let enter = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
+
+        assert_eq!(
+            handle_task_edit_key(&config, enter, &mut empty_state),
+            TaskEditAction::Continue
+        );
+
+        let mut titled_state = state();
+        titled_state.title = "Task".to_string();
+        assert_eq!(
+            handle_task_edit_key(&config, enter, &mut titled_state),
+            TaskEditAction::Save
+        );
+    }
 }
